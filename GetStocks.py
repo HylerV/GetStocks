@@ -4,6 +4,36 @@ import pandas as pd
 def get_all_boards():
     return ak.stock_board_concept_name_em()[['板块名称', '板块代码']]
 
+def calculate_fib_with_dates(hist_hfq):
+    """动态识别波段（后复权）"""
+    try:
+        hist_sorted = hist_hfq.sort_index(ascending=True)
+        
+        # 寻找最近显著低点（10日窗口）
+        low_roll = hist_sorted['最低'].rolling(10, min_periods=5).min()
+        low_candidates = hist_sorted[hist_sorted['最低'] == low_roll]
+        if low_candidates.empty:
+            return None, None, None, None, None
+        
+        # 取最后一个低点
+        low_date = low_candidates.index[-1]
+        prev_low_hfq = round(low_candidates.iloc[-1]['最低'], 2)
+        
+        # 在低点之后寻找高点
+        high_window = hist_sorted.loc[low_date:]
+        if len(high_window) < 5:
+            return None, None, None, None, None
+        
+        high_date = high_window['最高'].idxmax()
+        prev_high_hfq = round(high_window.loc[high_date, '最高'], 2)
+        
+        # 计算斐波那契位
+        fib_hfq = round(prev_low_hfq + (prev_high_hfq - prev_low_hfq) * 0.618, 2)
+        
+        return low_date, high_date, prev_low_hfq, prev_high_hfq, fib_hfq
+    except:
+        return None, None, None, None, None
+    
 def select_board():
     """修复版板块选择函数"""
     boards = get_all_boards()
@@ -26,36 +56,6 @@ def select_board():
             print(f"找到{len(matched)}个匹配项：")
             print(matched['板块名称'].tolist())
             print("请精确输入关键字")
-
-def calculate_fib_with_dates(hist_hfq):
-    """动态识别波段并返回关键日期和价格（后复权）"""
-    try:
-        hist_sorted = hist_hfq.sort_index(ascending=True)
-        
-        # 寻找最近显著低点（10日窗口）
-        low_roll = hist_sorted['最低'].rolling(10, min_periods=5).min()
-        low_candidates = hist_sorted[hist_sorted['最低'] == low_roll]
-        if low_candidates.empty:
-            return None, None, None, None, None
-        
-        # 取最后一个低点
-        low_date = low_candidates.index[-1]
-        prev_low_hfq = round(low_candidates.iloc[-1]['最低'], 2)
-        
-        # 在低点之后寻找高点
-        high_window = hist_sorted.loc[low_date:]
-        if len(high_window) < 5:
-            return None, None, None, None, None
-        
-        high_date = high_window['最高'].idxmax()
-        prev_high_hfq = round(high_window.loc[high_date, '最高'], 2)
-        
-        # 计算斐波那契位（后复权）
-        fib_hfq = round(prev_low_hfq + (prev_high_hfq - prev_low_hfq) * 0.618, 2)
-        
-        return low_date, high_date, prev_low_hfq, prev_high_hfq, fib_hfq
-    except:
-        return None, None, None, None, None
 
 def main():
     board_info = select_board()
@@ -85,7 +85,7 @@ def main():
         (all_stocks['代码'].isin(board_codes)) &
         (all_stocks['流通市值'] / 1e8 >= 15) &
         (all_stocks['流通市值'] / 1e8 <= 100) &
-        (all_stocks['最新价'] <= 20) &
+        (all_stocks['最新价'] <= 50) &
         (~all_stocks['名称'].str.contains('ST')) &
         (all_stocks['代码'].astype(str).str.startswith(('6', '000')))
     ]
