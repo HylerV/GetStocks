@@ -14,7 +14,6 @@ EASTMONEY_HEADERS = {
     'Referer': 'http://quote.eastmoney.com/'
 }
 
-
 def get_all_boards():
     """获取有效板块列表（兼容处理）"""
     @retry(stop_max_attempt_number=3, wait_fixed=2000)
@@ -26,6 +25,12 @@ def get_all_boards():
             df['板块代码'] = df['板块代码'].apply(lambda x: f"BK{x.split('.')[0]}" if '.' in x else x)
             # 转换为API需要的格式
             boards = []
+            # 添加全市场选项
+            boards.append({
+                'code': 'ALL',
+                'name': '全市场'
+            })
+            # 添加其他板块
             for _, row in df[df['板块代码'].str.startswith('BK')].iterrows():
                 boards.append({
                     'code': row['板块代码'],
@@ -40,11 +45,36 @@ def get_all_boards():
         return fetch()
     except:
         return []
-    
+
+def get_all_market_stocks():
+    """获取全市场股票数据"""
+    try:
+        df = ak.stock_zh_a_spot_em()
+        stocks = []
+        for _, row in df.iterrows():
+            # 过滤条件：主板股票，非ST，流通市值15-100亿，股价<=50
+            if (row['代码'].startswith(('600', '000', '001')) and 
+                'ST' not in row['名称'] and 
+                15e8 <= float(row['流通市值']) <= 100e8 and 
+                float(row['最新价']) <= 50):
+                stocks.append({
+                    'code': row['代码'],
+                    'name': row['名称'],
+                    'current_price': float(row['最新价']),
+                    'market_cap': round(float(row['流通市值'])/1e8, 2)
+                })
+        return stocks
+    except Exception as e:
+        print(f"获取全市场数据失败: {str(e)}")
+        return []
+
 def get_board_stocks(board_code):
     """多源成分股获取（优先级：akshare > 东方财富 > 麦蕊智数）"""
+    # 全市场模式
+    if board_code == 'ALL':
+        return get_all_market_stocks()
+    
     stocks = []
-
     # 验证板块代码
     if not board_code.startswith("BK"):
         print(f"⚠️ 无效板块代码: {board_code}")
@@ -61,12 +91,17 @@ def get_board_stocks(board_code):
             df['股票代码'] = df[code_col].astype(str).str.zfill(6)
             # 转换为API需要的格式
             for _, row in df.iterrows():
-                stocks.append({
-                    'code': row['股票代码'],
-                    'name': row['名称'] if '名称' in df.columns else '',
-                    'current_price': row['最新价'] if '最新价' in df.columns else 0,
-                    'market_cap': round(float(row['流通市值'])/1e8, 2) if '流通市值' in df.columns else 0
-                })
+                # 过滤条件：主板股票，非ST，流通市值15-100亿，股价<=50
+                if (row['股票代码'].startswith(('600', '000', '001')) and 
+                    'ST' not in row['名称'] and 
+                    15e8 <= float(row['流通市值']) <= 100e8 and 
+                    float(row['最新价']) <= 50):
+                    stocks.append({
+                        'code': row['股票代码'],
+                        'name': row['名称'] if '名称' in df.columns else '',
+                        'current_price': float(row['最新价']) if '最新价' in df.columns else 0,
+                        'market_cap': round(float(row['流通市值'])/1e8, 2) if '流通市值' in df.columns else 0
+                    })
             return stocks
     except Exception as e:
         print(f"[主接口] akshare失败: {str(e)}")
@@ -77,53 +112,26 @@ def get_board_stocks(board_code):
         if codes:
             print("[备用1] 东方财富获取成功")
             # 获取股票详细信息
-            stocks = []
+            df = ak.stock_zh_a_spot_em()
             for code in codes:
                 try:
-                    stock_info = ak.stock_zh_a_spot_em()
-                    stock_info = stock_info[stock_info['代码'] == code].iloc[0]
-                    stocks.append({
-                        'code': code,
-                        'name': stock_info['名称'],
-                        'current_price': stock_info['最新价'],
-                        'market_cap': round(float(stock_info['流通市值'])/1e8, 2)
-                    })
+                    stock_info = df[df['代码'] == code].iloc[0]
+                    # 过滤条件：主板股票，非ST，流通市值15-100亿，股价<=50
+                    if (code.startswith(('600', '000', '001')) and 
+                        'ST' not in stock_info['名称'] and 
+                        15e8 <= float(stock_info['流通市值']) <= 100e8 and 
+                        float(stock_info['最新价']) <= 50):
+                        stocks.append({
+                            'code': code,
+                            'name': stock_info['名称'],
+                            'current_price': float(stock_info['最新价']),
+                            'market_cap': round(float(stock_info['流通市值'])/1e8, 2)
+                        })
                 except:
                     continue
             return stocks
     except Exception as e:
         print(f"[备用1] 东方财富失败: {str(e)}")
-    
-    # 方案三：麦蕊智数接口
-    try:
-        api_url = f"http://api.mairuiapi.com/concept/hold/{MAIRUI_LICENSE}"
-        params = {"bkdm": board_code[2:], "market": "cn"}
-        
-        response = requests.get(api_url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        
-        if isinstance(data, list) and len(data) > 0:
-            for item in data:
-                if 'dm' in item:
-                    try:
-                        code = item['dm']
-                        stock_info = ak.stock_zh_a_spot_em()
-                        stock_info = stock_info[stock_info['代码'] == code].iloc[0]
-                        stocks.append({
-                            'code': code,
-                            'name': stock_info['名称'],
-                            'current_price': stock_info['最新价'],
-                            'market_cap': round(float(stock_info['流通市值'])/1e8, 2)
-                        })
-                    except:
-                        continue
-            print(f"成功获取成分股数量：{len(stocks)}")
-        else:
-            print("⚠️ 接口返回空数据")
-            
-    except Exception as e:
-        print(f"成分股获取失败: {str(e)}")
     
     return stocks
 
@@ -154,24 +162,25 @@ def fetch_eastmoney(board_code):
         return [item["f12"] for item in data["data"]["diff"]]
     return []
 
-@retry(stop_max_attempt_number=3, wait_fixed=3000)
-def fetch_mairui_concept(board_code):
-    """根据麦芯文档获取板块成分股"""
-    api_url = f"http://api.mairuiapi.com/concept/hold/{MAIRUI_LICENSE}"
-    params = {
-        "bkdm": board_code[2:],  # 去除BK前缀
-        "market": "cn"
-    }
-    
+def get_stock_history(stock_code, days=120):
+    """获取股票历史数据"""
     try:
-        response = requests.get(api_url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        # 获取后复权数据
+        df_hfq = ak.stock_zh_a_hist(symbol=stock_code, period="daily", adjust="hfq")
+        df_hfq = df_hfq.tail(days)  # 获取最近N天数据
         
-        # 解析数据（根据实际返回结构调整）
-        if isinstance(data, list):
-            return [item['dm'] for item in data if 'dm' in item]
-        return []
+        # 转换为K线图所需格式
+        kdata = []
+        for _, row in df_hfq.iterrows():
+            kdata.append({
+                'time': row['日期'].strftime('%Y-%m-%d'),
+                'open': float(row['开盘']),
+                'high': float(row['最高']),
+                'low': float(row['最低']),
+                'close': float(row['收盘']),
+                'volume': float(row['成交量'])
+            })
+        return kdata
     except Exception as e:
-        print(f"麦蕊接口异常: {str(e)}")
+        print(f"获取历史数据失败: {str(e)}")
         return [] 

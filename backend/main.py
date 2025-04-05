@@ -10,7 +10,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import get_db, Board, Stock, FibonacciAnalysis, PriceHistory, update_or_create
-from GetStocks import get_all_boards, get_board_stocks
+from GetStocks import get_all_boards, get_board_stocks, get_stock_history
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -151,26 +151,15 @@ async def get_stock_analysis(
 
 @app.get("/api/stocks/{stock_code}/history")
 @limiter.limit("30/minute")
-async def get_stock_history(
+async def get_stock_history_api(
     request: Request,
     stock_code: str,
-    db: Session = Depends(get_db),
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None
+    days: Optional[int] = 120
 ):
     try:
-        stock = db.query(Stock).filter(Stock.code == stock_code).first()
-        if not stock:
-            raise HTTPException(status_code=404, detail="股票不存在")
-        
-        query = db.query(PriceHistory).filter(PriceHistory.stock_id == stock.id)
-        
-        if start_date:
-            query = query.filter(PriceHistory.date >= datetime.strptime(start_date, "%Y-%m-%d"))
-        if end_date:
-            query = query.filter(PriceHistory.date <= datetime.strptime(end_date, "%Y-%m-%d"))
-        
-        history = query.order_by(PriceHistory.date).all()
+        history = get_stock_history(stock_code, days)
+        if not history:
+            raise HTTPException(status_code=404, detail="获取历史数据失败")
         return history
     except HTTPException as he:
         raise he
