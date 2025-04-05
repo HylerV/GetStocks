@@ -9,8 +9,8 @@
           @input="handleSearch"
         />
         <el-radio-group v-model="mode" @change="handleModeChange">
-          <el-radio label="board">板块模式</el-radio>
-          <el-radio label="all">全市场模式</el-radio>
+          <el-radio :value="'board'">板块模式</el-radio>
+          <el-radio :value="'all'">全市场模式</el-radio>
         </el-radio-group>
       </div>
       
@@ -99,15 +99,19 @@ const fetchBoards = async () => {
     loading.value = true
     const response = await axios.get('/api/boards', {
       params: {
-        skip: (currentPage.value - 1) * pageSize.value,
-        limit: pageSize.value,
+        page: currentPage.value,
+        page_size: pageSize.value,
         search: searchKeyword.value
       }
     })
-    boards.value = response.data
-    totalBoards.value = response.headers['x-total-count'] || boards.value.length
+    // 确保response.data.items是一个数组
+    boards.value = response.data.items || []
+    totalBoards.value = response.data.total || 0
   } catch (error) {
     ElMessage.error('获取板块列表失败')
+    console.error('获取板块列表失败:', error)
+    boards.value = []
+    totalBoards.value = 0
   } finally {
     loading.value = false
   }
@@ -117,9 +121,12 @@ const fetchStocks = async (boardCode) => {
   try {
     stocksLoading.value = true
     const response = await axios.get(`/api/boards/${boardCode}/stocks`)
-    currentStocks.value = response.data
+    // 确保response.data.items是一个数组
+    currentStocks.value = response.data.items || []
   } catch (error) {
     ElMessage.error('获取股票列表失败')
+    console.error('获取股票列表失败:', error)
+    currentStocks.value = []
   } finally {
     stocksLoading.value = false
   }

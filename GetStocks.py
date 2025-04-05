@@ -24,35 +24,50 @@ def get_all_boards():
             # 清洗数据确保代码格式正确
             df = df[['板块名称', '板块代码']].dropna()
             df['板块代码'] = df['板块代码'].apply(lambda x: f"BK{x.split('.')[0]}" if '.' in x else x)
-            return df[df['板块代码'].str.startswith('BK')]
+            # 转换为API需要的格式
+            boards = []
+            for _, row in df[df['板块代码'].str.startswith('BK')].iterrows():
+                boards.append({
+                    'code': row['板块代码'],
+                    'name': row['板块名称']
+                })
+            return boards
         except Exception as e:
             print(f"板块数据异常: {str(e)}")
-            return pd.DataFrame()
+            return []
     
     try:
         return fetch()
     except:
-        return pd.DataFrame(columns=['板块名称', '板块代码'])
+        return []
     
 def get_board_stocks(board_code):
     """多源成分股获取（优先级：akshare > 东方财富 > 麦蕊智数）"""
-    board_codes = []
+    stocks = []
 
     # 验证板块代码
     if not board_code.startswith("BK"):
         print(f"⚠️ 无效板块代码: {board_code}")
-        return pd.DataFrame()
+        return []
     
     print(f"\n{'='*30}\n正在获取 [{board_code}] 成分股")
     
     # 方案一：使用akshare接口
     try:
-        stocks = ak.stock_board_concept_cons_em(symbol=board_code)
-        if not stocks.empty:
+        df = ak.stock_board_concept_cons_em(symbol=board_code)
+        if not df.empty:
             print("[主接口] akshare获取成功")
-            code_col = 'symbol' if 'symbol' in stocks.columns else '股票代码'
-            stocks['股票代码'] = stocks[code_col].astype(str).str.zfill(6)
-            return stocks[['股票代码']]
+            code_col = 'symbol' if 'symbol' in df.columns else '股票代码'
+            df['股票代码'] = df[code_col].astype(str).str.zfill(6)
+            # 转换为API需要的格式
+            for _, row in df.iterrows():
+                stocks.append({
+                    'code': row['股票代码'],
+                    'name': row['名称'] if '名称' in df.columns else '',
+                    'current_price': row['最新价'] if '最新价' in df.columns else 0,
+                    'market_cap': round(float(row['流通市值'])/1e8, 2) if '流通市值' in df.columns else 0
+                })
+            return stocks
     except Exception as e:
         print(f"[主接口] akshare失败: {str(e)}")
     
@@ -61,13 +76,26 @@ def get_board_stocks(board_code):
         codes = fetch_eastmoney(board_code)
         if codes:
             print("[备用1] 东方财富获取成功")
-            return pd.DataFrame({"股票代码": codes})
+            # 获取股票详细信息
+            stocks = []
+            for code in codes:
+                try:
+                    stock_info = ak.stock_zh_a_spot_em()
+                    stock_info = stock_info[stock_info['代码'] == code].iloc[0]
+                    stocks.append({
+                        'code': code,
+                        'name': stock_info['名称'],
+                        'current_price': stock_info['最新价'],
+                        'market_cap': round(float(stock_info['流通市值'])/1e8, 2)
+                    })
+                except:
+                    continue
+            return stocks
     except Exception as e:
         print(f"[备用1] 东方财富失败: {str(e)}")
     
-    # 方案三：麦蕊智数接口（需配置API_KEY）
+    # 方案三：麦蕊智数接口
     try:
-        # 获取成分股数据
         api_url = f"http://api.mairuiapi.com/concept/hold/{MAIRUI_LICENSE}"
         params = {"bkdm": board_code[2:], "market": "cn"}
         
@@ -75,18 +103,29 @@ def get_board_stocks(board_code):
         response.raise_for_status()
         data = response.json()
         
-        # 确保数据解析正确
         if isinstance(data, list) and len(data) > 0:
-            board_codes = [item['dm'] for item in data if 'dm' in item]
-            print(f"成功获取成分股数量：{len(board_codes)}")
+            for item in data:
+                if 'dm' in item:
+                    try:
+                        code = item['dm']
+                        stock_info = ak.stock_zh_a_spot_em()
+                        stock_info = stock_info[stock_info['代码'] == code].iloc[0]
+                        stocks.append({
+                            'code': code,
+                            'name': stock_info['名称'],
+                            'current_price': stock_info['最新价'],
+                            'market_cap': round(float(stock_info['流通市值'])/1e8, 2)
+                        })
+                    except:
+                        continue
+            print(f"成功获取成分股数量：{len(stocks)}")
         else:
             print("⚠️ 接口返回空数据")
             
     except Exception as e:
         print(f"成分股获取失败: {str(e)}")
     
-    # 统一返回格式
-    return pd.DataFrame({"股票代码": board_codes})
+    return stocks
 
 @retry(stop_max_attempt_number=3, wait_fixed=2000)
 def fetch_eastmoney(board_code):

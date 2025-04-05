@@ -10,6 +10,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import get_db, Board, Stock, FibonacciAnalysis, PriceHistory, update_or_create
+from GetStocks import get_all_boards, get_board_stocks
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -64,24 +65,33 @@ async def root():
 
 @app.get("/api/boards")
 @limiter.limit("60/minute")
-async def get_boards(
+async def get_boards_api(
     request: Request,
-    db: Session = Depends(get_db),
     page: int = 1,
     page_size: int = 20,
     search: Optional[str] = None
 ):
     try:
-        query = db.query(Board)
-        if search:
-            query = query.filter(Board.name.ilike(f"%{search}%"))
+        # 使用GetStocks.py中的函数获取板块数据
+        all_boards = get_all_boards()
         
-        total = query.count()
-        boards = query.offset((page - 1) * page_size).limit(page_size).all()
+        # 搜索过滤
+        if search:
+            filtered_boards = [
+                board for board in all_boards 
+                if search.lower() in board['name'].lower()
+            ]
+        else:
+            filtered_boards = all_boards
+        
+        # 分页
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paged_boards = filtered_boards[start_idx:end_idx]
         
         return {
-            "total": total,
-            "items": boards,
+            "total": len(filtered_boards),
+            "items": paged_boards,
             "page": page,
             "page_size": page_size
         }
@@ -91,30 +101,27 @@ async def get_boards(
 
 @app.get("/api/boards/{board_code}/stocks")
 @limiter.limit("60/minute")
-async def get_board_stocks(
+async def get_board_stocks_api(
     request: Request,
     board_code: str,
-    db: Session = Depends(get_db),
     page: int = 1,
     page_size: int = 20
 ):
     try:
-        board = db.query(Board).filter(Board.code == board_code).first()
-        if not board:
-            raise HTTPException(status_code=404, detail="板块不存在")
+        # 使用GetStocks.py中的函数获取股票数据
+        all_stocks = get_board_stocks(board_code)
         
-        query = db.query(Stock).filter(Stock.board_id == board.id)
-        total = query.count()
-        stocks = query.offset((page - 1) * page_size).limit(page_size).all()
+        # 分页
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paged_stocks = all_stocks[start_idx:end_idx]
         
         return {
-            "total": total,
-            "items": stocks,
+            "total": len(all_stocks),
+            "items": paged_stocks,
             "page": page,
             "page_size": page_size
         }
-    except HTTPException as he:
-        raise he
     except Exception as e:
         logger.error(f"获取板块股票失败: {str(e)}")
         raise HTTPException(status_code=500, detail="获取板块股票失败")
