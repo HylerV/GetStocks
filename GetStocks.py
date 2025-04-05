@@ -1,151 +1,348 @@
 import akshare as ak
 import pandas as pd
+import requests
+import time
+from retrying import retry
+
+# ======================
+# 配置参数
+# ======================
+MAIRUI_LICENSE = "F49B3680-B2E3-4466-8183-E9EDFF77A987"  # 替换为实际授权码
+
+EASTMONEY_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Referer': 'http://quote.eastmoney.com/'
+}
+
 
 def get_all_boards():
-    return ak.stock_board_concept_name_em()[['板块名称', '板块代码']]
-
-def calculate_fib_with_dates(hist_hfq):
-    """动态识别波段（后复权）"""
+    """获取有效板块列表（兼容处理）"""
+    @retry(stop_max_attempt_number=3, wait_fixed=2000)
+    def fetch():
+        try:
+            df = ak.stock_board_concept_name_em()
+            # 清洗数据确保代码格式正确
+            df = df[['板块名称', '板块代码']].dropna()
+            df['板块代码'] = df['板块代码'].apply(lambda x: f"BK{x.split('.')[0]}" if '.' in x else x)
+            return df[df['板块代码'].str.startswith('BK')]
+        except Exception as e:
+            print(f"板块数据异常: {str(e)}")
+            return pd.DataFrame()
+    
     try:
-        hist_sorted = hist_hfq.sort_index(ascending=True)
+        return fetch()
+    except:
+        return pd.DataFrame(columns=['板块名称', '板块代码'])
+    
+def get_board_stocks(board_code):
+    """多源成分股获取（优先级：akshare > 东方财富 > 麦蕊智数）"""
+    board_codes = []
+
+    # 验证板块代码
+    if not board_code.startswith("BK"):
+        print(f"⚠️ 无效板块代码: {board_code}")
+        return pd.DataFrame()
+    
+    print(f"\n{'='*30}\n正在获取 [{board_code}] 成分股")
+    
+    # 方案一：使用akshare接口
+    try:
+        stocks = ak.stock_board_concept_cons_em(symbol=board_code)
+        if not stocks.empty:
+            print("[主接口] akshare获取成功")
+            code_col = 'symbol' if 'symbol' in stocks.columns else '股票代码'
+            stocks['股票代码'] = stocks[code_col].astype(str).str.zfill(6)
+            return stocks[['股票代码']]
+    except Exception as e:
+        print(f"[主接口] akshare失败: {str(e)}")
+    
+    # 方案二：东方财富直接接口
+    try:
+        codes = fetch_eastmoney(board_code)
+        if codes:
+            print("[备用1] 东方财富获取成功")
+            return pd.DataFrame({"股票代码": codes})
+    except Exception as e:
+        print(f"[备用1] 东方财富失败: {str(e)}")
+    
+    # 方案三：麦蕊智数接口（需配置API_KEY）
+    try:
+        # 获取成分股数据
+        api_url = f"http://api.mairuiapi.com/concept/hold/{MAIRUI_LICENSE}"
+        params = {"bkdm": board_code[2:], "market": "cn"}
         
-        # 寻找最近显著低点（10日窗口）
-        low_roll = hist_sorted['最低'].rolling(10, min_periods=5).min()
-        low_candidates = hist_sorted[hist_sorted['最低'] == low_roll]
+        response = requests.get(api_url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        # 确保数据解析正确
+        if isinstance(data, list) and len(data) > 0:
+            board_codes = [item['dm'] for item in data if 'dm' in item]
+            print(f"成功获取成分股数量：{len(board_codes)}")
+        else:
+            print("⚠️ 接口返回空数据")
+            
+    except Exception as e:
+        print(f"成分股获取失败: {str(e)}")
+    
+    # 统一返回格式
+    return pd.DataFrame({"股票代码": board_codes})
+
+@retry(stop_max_attempt_number=3, wait_fixed=2000)
+def fetch_eastmoney(board_code):
+    """东方财富直接接口（动态参数）"""
+    numeric_code = board_code[2:]  # 去除BK前缀
+    url = "http://62.push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": "1",
+        "pz": "500",
+        "po": "1",
+        "np": "1",
+        "ut": "bd1d9ddb04089700cf9cern",
+        "fltt": "2",
+        "invt": "2",
+        "fid": "f3",
+        "fs": f"b:{numeric_code}",
+        "fields": "f12,f14",
+        "_": int(time.time()*1000)  # 动态时间戳防缓存
+    }
+    
+    response = requests.get(url, params=params, headers=EASTMONEY_HEADERS)
+    response.raise_for_status()
+    data = response.json()
+    
+    if data.get('data', {}).get('diff'):
+        return [item["f12"] for item in data["data"]["diff"]]
+    return []
+
+@retry(stop_max_attempt_number=3, wait_fixed=3000)
+def fetch_mairui_concept(board_code):
+    """根据麦芯文档获取板块成分股"""
+    api_url = f"http://api.mairuiapi.com/concept/hold/{MAIRUI_LICENSE}"
+    params = {
+        "bkdm": board_code[2:],  # 去除BK前缀
+        "market": "cn"
+    }
+    
+    try:
+        response = requests.get(api_url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        # 解析数据（根据实际返回结构调整）
+        if isinstance(data, list):
+            return [item['dm'] for item in data if 'dm' in item]
+        return []
+    except Exception as e:
+        print(f"麦蕊接口异常: {str(e)}")
+        return []
+
+def calculate_fib_with_dates(hist_data):
+    """动态识别波段"""
+    try:
+        if not all(col in hist_data.columns for col in ['low', 'high']):
+            raise ValueError("历史数据缺少必要列")
+        
+        hist_sorted = hist_data.sort_index(ascending=True)
+        
+        # 寻找最近显著低点
+        low_roll = hist_sorted['low'].rolling(10, min_periods=5).min()
+        low_candidates = hist_sorted[hist_sorted['low'] == low_roll]
+        
         if low_candidates.empty:
             return None, None, None, None, None
-        
-        # 取最后一个低点
+            
         low_date = low_candidates.index[-1]
-        prev_low_hfq = round(low_candidates.iloc[-1]['最低'], 2)
+        prev_low = round(low_candidates.iloc[-1]['low'], 2)
         
         # 在低点之后寻找高点
         high_window = hist_sorted.loc[low_date:]
         if len(high_window) < 5:
             return None, None, None, None, None
+            
+        high_date = high_window['high'].idxmax()
+        prev_high = round(high_window.loc[high_date, 'high'], 2)
         
-        high_date = high_window['最高'].idxmax()
-        prev_high_hfq = round(high_window.loc[high_date, '最高'], 2)
-        
-        # 计算斐波那契位
-        fib_hfq = round(prev_low_hfq + (prev_high_hfq - prev_low_hfq) * 0.618, 2)
-        
-        return low_date, high_date, prev_low_hfq, prev_high_hfq, fib_hfq
-    except:
+        fib_level = round(prev_low + (prev_high - prev_low) * 0.618, 2)
+        return low_date, high_date, prev_low, prev_high, fib_level
+    except Exception as e:
+        print(f"波段计算错误: {str(e)}")
         return None, None, None, None, None
-    
+
+def get_hist_data(symbol, adjust_type):
+    """获取历史数据"""
+    try:
+        df = ak.stock_zh_a_hist(
+            symbol=symbol,
+            period="daily",
+            adjust=adjust_type
+        )
+        return df.rename(columns={
+            '日期': 'date',
+            '开盘': 'open',
+            '最高': 'high',
+            '最低': 'low',
+            '收盘': 'close'
+        }).set_index('date')
+    except Exception as e:
+        print(f"历史数据获取失败: {symbol} {str(e)[:50]}")
+        return None
+
 def select_board():
-    """修复版板块选择函数"""
+    """增强版板块选择（增加全市场模式）"""
     boards = get_all_boards()
     
-    print("\n可用板块示例：")
-    print(boards['板块名称'].head(20).tolist())
+    print("\n操作指引：")
+    print("- 输入板块名称进行筛选")
+    print("- 输入 * 进行全市场筛选")
+    print("- 输入 q 退出程序")
     
     while True:
-        keyword = input("\n请输入板块关键字（输入q退出）:").strip()
-        if keyword.lower() == 'q':
-            return None  # 明确返回None
+        keyword = input("\n请输入操作指令:").strip()
         
-        matched = boards[boards['板块名称'].str.contains(keyword)]
-        if len(matched) == 0:
-            print("⚠️ 未找到相关板块")
-            return None  # 明确返回None
-        elif len(matched) == 1:
-            return matched.iloc[0].to_dict()  # 转换为字典
-        else:
+        # 全市场模式
+        if keyword == "*":
+            return {"模式": "全市场"}
+        
+        # 退出指令
+        if keyword.lower() == 'q':
+            return None
+        
+        # 板块筛选模式
+        matched = boards[boards['板块名称'].str.contains(keyword, case=False)]
+        if len(matched) == 1:
+            selected = matched.iloc[0]
+            if selected['板块代码'].startswith("BK"):
+                return selected.to_dict()
+            print("⚠️ 无效板块代码格式")
+        elif len(matched) > 1:
             print(f"找到{len(matched)}个匹配项：")
             print(matched['板块名称'].tolist())
-            print("请精确输入关键字")
+        else:
+            print("⚠️ 未找到相关板块")
 
 def main():
-    board_info = select_board()
-    # 统一判断返回值是否为None
-    if board_info is None:
-        print("退出程序")
+    selection = select_board()
+    if not selection:
         return
     
-    # 访问字典值
-    print(f"\n✅ 当前板块：{board_info['板块名称']}")
-    board_code = board_info['板块代码']
-    
-    # 获取成分股
-    try:
-        board_stocks = ak.stock_board_concept_cons_em(symbol=board_code)
-        board_codes = board_stocks['代码'].tolist()
-        print(f"原始成分股数量：{len(board_codes)}")
-    except Exception as e:
-        print(f"❌ 获取成分股失败：{e}")
-        return
-    
-    # 获取全市场数据
-    all_stocks = ak.stock_zh_a_spot_em()
-    
-    # 筛选条件
+    # 全市场模式处理
+    if "模式" in selection:
+        print("\n✅ 当前模式：全市场筛选")
+        try:
+            all_stocks = ak.stock_zh_a_spot_em()
+            all_stocks['代码'] = all_stocks['代码'].astype(str).str.zfill(6)
+            board_codes = all_stocks['代码'].tolist()
+        except Exception as e:
+            print(f"全市场数据获取失败: {str(e)}")
+            return
+    else:
+        # 原有板块处理逻辑
+        print(f"\n✅ 当前板块：{selection['板块名称']}")
+        board_stocks = get_board_stocks(selection['板块代码'])
+        board_codes = board_stocks['股票代码'].tolist() if not board_stocks.empty else []
+        if not board_codes:
+            print("⚠️ 成分股获取失败，自动切换至全市场模式")
+            all_stocks = ak.stock_zh_a_spot_em()
+            board_codes = all_stocks['代码'].tolist()
+
+    # 统一筛选条件
     filtered = all_stocks[
         (all_stocks['代码'].isin(board_codes)) &
-        (all_stocks['流通市值'] / 1e8 >= 15) &
-        (all_stocks['流通市值'] / 1e8 <= 100) &
-        (all_stocks['最新价'] <= 50) &
-        (~all_stocks['名称'].str.contains('ST')) &
-        (all_stocks['代码'].astype(str).str.startswith(('6', '000')))
+        (all_stocks['流通市值'].between(15e8, 100e8)) &  # 流通市值15-100亿
+        (all_stocks['最新价'] <= 50) &                  # 股价不超过50元
+        (~all_stocks['名称'].str.contains('ST')) &     # 排除ST股
+        (all_stocks['代码'].str[:3].isin(['600', '000', '001']))  # 主板股票
     ]
-    print(f"\n初步筛选数量：{len(filtered)}")
     
-    if len(filtered) == 0:
-        print("❌ 筛选条件过严，请调整以下条件：")
-        print("- 流通市值范围\n- 股价限制\n- 主板要求")
-        return
+    print(f"\n筛选结果：{len(filtered)}只")
+    if not filtered.empty:
+        print("候选股示例：")
+        print(filtered[['代码', '名称', '最新价', '流通市值']].head(3))
     
-    print("\n候选股示例：")
-    print(filtered[['代码', '名称', '最新价', '流通市值']].head())
-    
-    # 技术分析（保留所有字段）
+    # 技术分析
     results = []
     for _, row in filtered.iterrows():
         code = row['代码']
-        print(f"\n处理中：{code} {row['名称']}...")
+        name = row['名称']
+        print(f"\n分析中：{code} {name}...")
+        
+        result = {
+            '代码': code,
+            '名称': name,
+            '最新价': row['最新价'],
+            '流通市值(亿)': round(row['流通市值']/1e8, 2),
+            '突破状态': '否'  # 默认状态
+        }
+
         try:
-            hist_hfq = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="hfq").set_index('日期')
-            low_date, high_date, prev_low_hfq, prev_high_hfq, fib_hfq = calculate_fib_with_dates(hist_hfq)
+            hist_hfq = get_hist_data(code, "hfq")
+            hist_qfq = get_hist_data(code, "qfq")
+
+            if hist_hfq is None or hist_qfq is None:
+                raise ValueError("历史数据不全")
+
+            if hist_hfq is None or hist_hfq.empty:
+                raise ValueError("无有效历史数据")
             
-            if not low_date:
+            # 对齐日期索引
+            common_dates = hist_hfq.index.intersection(hist_qfq.index)
+            hist_hfq = hist_hfq.loc[common_dates]
+            hist_qfq = hist_qfq.loc[common_dates]
+                
+            fib_data = calculate_fib_with_dates(hist_hfq)
+            if not fib_data[0]:
                 print(f"{code} 未找到有效波段")
+                results.append(result)  # 仍然记录
+                continue
+
+            low_date, high_date, hfq_low, hfq_high, hfq_fib = fib_data
+                
+            hist_qfq = get_hist_data(code, "qfq")
+
+            # if hist_qfq is None or hist_qfq.empty:
+            #     raise ValueError("无前复权数据")
+            
+            # 验证日期有效性
+            if low_date not in hist_qfq.index or high_date not in hist_qfq.index:
+                print(f"{code} 关键日期缺失")
+                results.append(result)
                 continue
                 
-            # 前复权映射
-            hist_qfq = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq").set_index('日期')
-            prev_low_qfq = hist_qfq.loc[low_date, '最低'] if low_date in hist_qfq.index else None
-            prev_high_qfq = hist_qfq.loc[high_date, '最高'] if high_date in hist_qfq.index else None
-            fib_qfq = round(prev_low_qfq + (prev_high_qfq - prev_low_qfq)*0.618, 2) if all([prev_low_qfq, prev_high_qfq]) else None
+            qfq_low = round(hist_qfq.loc[low_date, 'low'], 2)
+            qfq_high = round(hist_qfq.loc[high_date, 'high'], 2)
+            qfq_fib = round(qfq_low + (qfq_high - qfq_low) * 0.618, 2)
             
             results.append({
                 '代码': code,
-                '名称': row['名称'],
-                '最新价（除权）': row['最新价'],
+                '名称': name,
+                '最新价': row['最新价'],
                 '流通市值(亿)': round(row['流通市值']/1e8, 2),
-                '后复权前低价': prev_low_hfq,
-                '后复权前高价': prev_high_hfq,
-                '后复权0.618位': fib_hfq,
-                '除权前低价': prev_low_qfq,
-                '除权前高价': prev_high_qfq,
-                '除权0.618位': fib_qfq,
-                '突破状态': '是' if (fib_qfq and row['最新价'] > fib_qfq) else '否'
+                '后复权低位': hfq_low,
+                '后复权高位': hfq_high,
+                '后复权0.618': hfq_fib,
+                '前复权低位': qfq_low,
+                '前复权高位': qfq_high,
+                '前复权0.618': qfq_fib,
+                '突破状态': '是' if (qfq_fib and row['最新价'] > qfq_fib) else '否'
             })
         except Exception as e:
-            print(f"❌ 处理失败：{str(e)[:50]}...")
+            print(f"分析失败：{str(e)[:50]}")
             results.append({
                 '代码': code,
-                '名称': row['名称'],
+                '名称': name,
                 '错误信息': str(e)[:50]
             })
     
-    # 结果输出
+    # 输出结果
     if results:
         result_df = pd.DataFrame(results)
         print("\n最终分析结果：")
         print(result_df)
     else:
-        print("⚠️ 所有股票分析失败，请检查网络或数据源")
+        print("⚠️ 所有股票分析失败")
 
 if __name__ == "__main__":
+    print("当前环境检测：")
+    print(f"- 授权码状态: {'已配置' if MAIRUI_LICENSE != 'YOUR_LICENSE_KEY' else '未配置'}")
     main()

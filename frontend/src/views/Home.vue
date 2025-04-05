@@ -1,273 +1,161 @@
 <template>
-  <div class="home">
-    <el-container>
-      <el-header>
-        <div class="header-content">
-          <h1>股票分析系统</h1>
-          <div class="header-buttons">
-            <el-button type="primary" @click="loadAvailableBoards" :loading="loadingAvailable">
-              获取有效板块
-            </el-button>
-            <el-button type="success" @click="refreshAllData" :loading="loading">
-              刷新数据
-            </el-button>
-          </div>
-        </div>
-      </el-header>
+  <div class="container">
+    <div class="left-panel">
+      <div class="search-box">
+        <el-input
+          v-model="searchKeyword"
+          placeholder="搜索板块"
+          clearable
+          @input="handleSearch"
+        />
+        <el-radio-group v-model="mode" @change="handleModeChange">
+          <el-radio label="board">板块模式</el-radio>
+          <el-radio label="all">全市场模式</el-radio>
+        </el-radio-group>
+      </div>
       
-      <el-main>
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-card class="board-card">
-              <template #header>
-                <div class="card-header">
-                  <span>板块列表</span>
-                  <el-input
-                    v-model="searchQuery"
-                    placeholder="搜索板块"
-                    clearable
-                    @clear="handleSearch"
-                    @input="handleSearch"
-                  >
-                    <template #prefix>
-                      <el-icon><Search /></el-icon>
-                    </template>
-                  </el-input>
-                </div>
-              </template>
-              
-              <el-tabs v-model="activeTab">
-                <el-tab-pane label="全部板块" name="all">
-                  <el-table
-                    :data="filteredBoards"
-                    style="width: 100%"
-                    height="calc(100vh - 300px)"
-                    @row-click="handleBoardClick"
-                  >
-                    <el-table-column prop="板块名称" label="板块名称" />
-                    <el-table-column prop="板块代码" label="板块代码" width="120" />
-                  </el-table>
-                </el-tab-pane>
-                
-                <el-tab-pane label="有效板块" name="available">
-                  <el-table
-                    :data="availableBoards"
-                    style="width: 100%"
-                    height="calc(100vh - 300px)"
-                    @row-click="handleAvailableBoardClick"
-                  >
-                    <el-table-column prop="name" label="板块名称">
-                      <template #default="scope">
-                        <span>{{ scope.row.name || '未分类股票' }}</span>
-                      </template>
-                    </el-table-column>
-                    <el-table-column prop="code" label="板块代码" width="120">
-                      <template #default="scope">
-                        <span>{{ scope.row.code || 'OTHER' }}</span>
-                      </template>
-                    </el-table-column>
-                    <el-table-column label="符合条件的股票" min-width="200">
-                      <template #default="scope">
-                        <el-popover
-                          placement="right"
-                          :width="600"
-                          trigger="hover"
-                        >
-                          <template #reference>
-                            <el-tag type="success">
-                              {{ (scope.row.matching_stocks || []).length }} 只
-                            </el-tag>
-                          </template>
-                          <div class="stock-popover">
-                            <el-table :data="scope.row.matching_stocks || []" size="small">
-                              <el-table-column prop="code" label="代码" width="100" />
-                              <el-table-column prop="name" label="名称" />
-                              <el-table-column prop="current_price" label="当前价" width="100" />
-                              <el-table-column label="斐波那契位" width="120">
-                                <template #default="{ row }">
-                                  {{ row.fib_qfq }}
-                                </template>
-                              </el-table-column>
-                              <el-table-column label="突破状态" width="100">
-                                <template #default="{ row }">
-                                  <el-tag :type="row.current_price > row.fib_qfq ? 'success' : 'info'">
-                                    {{ row.current_price > row.fib_qfq ? '已突破' : '未突破' }}
-                                  </el-tag>
-                                </template>
-                              </el-table-column>
-                              <el-table-column label="操作" width="100">
-                                <template #default="{ row }">
-                                  <el-button type="primary" link @click.stop="showStockDetail(row)">
-                                    详情
-                                  </el-button>
-                                </template>
-                              </el-table-column>
-                            </el-table>
-                          </div>
-                        </el-popover>
-                      </template>
-                    </el-table-column>
-                  </el-table>
-                </el-tab-pane>
-              </el-tabs>
-            </el-card>
-          </el-col>
-          
-          <el-col :span="16">
-            <el-card v-if="selectedStock" class="stock-detail-card">
-              <template #header>
-                <div class="card-header">
-                  <span>{{ selectedStock.name }} ({{ selectedStock.code }}) - 分析详情</span>
-                  <el-button type="primary" @click="refreshStockData" :loading="loading">
-                    刷新数据
-                  </el-button>
-                </div>
-              </template>
-              
-              <div class="stock-info">
-                <el-descriptions :column="3" border>
-                  <el-descriptions-item label="当前价格">{{ selectedStock.current_price }}</el-descriptions-item>
-                  <el-descriptions-item label="斐波那契位">{{ selectedStock.fib_qfq }}</el-descriptions-item>
-                  <el-descriptions-item label="突破状态">
-                    <el-tag :type="selectedStock.current_price > selectedStock.fib_qfq ? 'success' : 'info'">
-                      {{ selectedStock.current_price > selectedStock.fib_qfq ? '已突破' : '未突破' }}
-                    </el-tag>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="后复权前低">{{ selectedStock.prev_low_hfq }}</el-descriptions-item>
-                  <el-descriptions-item label="后复权前高">{{ selectedStock.prev_high_hfq }}</el-descriptions-item>
-                  <el-descriptions-item label="后复权0.618位">{{ selectedStock.fib_hfq }}</el-descriptions-item>
-                  <el-descriptions-item label="除权前低">{{ selectedStock.prev_low_qfq }}</el-descriptions-item>
-                  <el-descriptions-item label="除权前高">{{ selectedStock.prev_high_qfq }}</el-descriptions-item>
-                  <el-descriptions-item label="除权0.618位">{{ selectedStock.fib_qfq }}</el-descriptions-item>
-                </el-descriptions>
-              </div>
-              
-              <div class="stock-chart">
-                <div ref="chartRef" style="height: 400px;"></div>
-              </div>
-            </el-card>
-            
-            <el-empty v-else description="请选择一只股票查看详情" />
-          </el-col>
-        </el-row>
-      </el-main>
-    </el-container>
+      <el-table
+        v-loading="loading"
+        :data="filteredBoards"
+        style="width: 100%"
+        @row-click="handleBoardClick"
+      >
+        <el-table-column prop="name" label="板块名称" />
+        <el-table-column prop="code" label="板块代码" width="100" />
+      </el-table>
+      
+      <el-pagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="totalBoards"
+        @current-change="handlePageChange"
+      />
+    </div>
+    
+    <div class="right-panel">
+      <div v-if="selectedBoard" class="board-info">
+        <h2>{{ selectedBoard.name }}</h2>
+        <el-button type="primary" @click="refreshData">刷新数据</el-button>
+      </div>
+      
+      <el-table
+        v-loading="stocksLoading"
+        :data="currentStocks"
+        style="width: 100%"
+        @row-click="handleStockClick"
+      >
+        <el-table-column prop="code" label="代码" width="100" />
+        <el-table-column prop="name" label="名称" />
+        <el-table-column prop="current_price" label="当前价" width="100" />
+        <el-table-column prop="market_cap" label="市值(亿)" width="100" />
+        <el-table-column label="突破状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.breakthrough_status ? 'success' : 'info'">
+              {{ row.breakthrough_status ? '是' : '否' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      
+      <div v-if="selectedStock" class="stock-chart">
+        <div ref="chartContainer" style="width: 100%; height: 400px;"></div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, computed, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
-import axios from 'axios'
+import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Search, Loading } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
+import axios from 'axios'
 
-const router = useRouter()
-const boards = ref([])
-const availableBoards = ref([])
-const searchQuery = ref('')
-const selectedStock = ref(null)
+// 状态变量
+const searchKeyword = ref('')
+const mode = ref('board')
 const loading = ref(false)
-const loadingAvailable = ref(false)
-const activeTab = ref('all')
-const chartRef = ref(null)
-let chart = null
+const stocksLoading = ref(false)
+const currentPage = ref(1)
+const pageSize = ref(10)
+const totalBoards = ref(0)
+const boards = ref([])
+const selectedBoard = ref(null)
+const currentStocks = ref([])
+const selectedStock = ref(null)
+const chartContainer = ref(null)
+const chart = ref(null)
 
+// 计算属性
 const filteredBoards = computed(() => {
-  if (!searchQuery.value) return boards.value
-  const query = searchQuery.value.toLowerCase()
+  if (!searchKeyword.value) return boards.value
   return boards.value.filter(board => 
-    board.板块名称.toLowerCase().includes(query) ||
-    board.板块代码.toLowerCase().includes(query)
+    board.name.toLowerCase().includes(searchKeyword.value.toLowerCase())
   )
 })
 
+// 方法
 const fetchBoards = async () => {
   try {
-    const response = await axios.get('http://localhost:8000/api/boards')
+    loading.value = true
+    const response = await axios.get('/api/boards', {
+      params: {
+        skip: (currentPage.value - 1) * pageSize.value,
+        limit: pageSize.value,
+        search: searchKeyword.value
+      }
+    })
     boards.value = response.data
+    totalBoards.value = response.headers['x-total-count'] || boards.value.length
   } catch (error) {
-    console.error('获取板块列表失败:', error)
-    ElMessage.error('获取板块列表失败，请刷新页面重试')
-  }
-}
-
-const loadAvailableBoards = async () => {
-  if (loadingAvailable.value) return
-  
-  loadingAvailable.value = true
-  try {
-    const response = await axios.get('http://localhost:8000/api/boards/available')
-    availableBoards.value = response.data.boards
-    activeTab.value = 'available'
-    
-    if (availableBoards.value.length === 0) {
-      ElMessage.warning('没有找到符合条件的板块')
-    } else {
-      ElMessage.success(`找到 ${availableBoards.value.length} 个有效板块`)
-    }
-  } catch (error) {
-    console.error('获取有效板块失败:', error)
-    ElMessage.error('获取有效板块失败，请重试')
+    ElMessage.error('获取板块列表失败')
   } finally {
-    loadingAvailable.value = false
+    loading.value = false
   }
 }
 
-const handleSearch = () => {
-  // 搜索逻辑已通过计算属性实现
-}
-
-const handleBoardClick = async (row) => {
+const fetchStocks = async (boardCode) => {
   try {
-    const response = await axios.get(`http://localhost:8000/api/board/${row.板块代码}/stocks`)
-    if (response.data.stocks && response.data.stocks.length > 0) {
-      showStockDetail(response.data.stocks[0])
-    }
+    stocksLoading.value = true
+    const response = await axios.get(`/api/boards/${boardCode}/stocks`)
+    currentStocks.value = response.data
   } catch (error) {
-    console.error('获取板块股票失败:', error)
-    ElMessage.error('获取板块股票失败')
+    ElMessage.error('获取股票列表失败')
+  } finally {
+    stocksLoading.value = false
   }
 }
 
-const handleAvailableBoardClick = async (row) => {
+const fetchStockHistory = async (stockCode) => {
   try {
-    // 如果是未分类股票，直接显示第一只股票的详情
-    if (row.code === 'OTHER' && row.matching_stocks && row.matching_stocks.length > 0) {
-      showStockDetail(row.matching_stocks[0])
-      return
-    }
-    
-    const response = await axios.get(`http://localhost:8000/api/board/${row.code}/stocks`)
-    if (response.data.stocks && response.data.stocks.length > 0) {
-      showStockDetail(response.data.stocks[0])
-    }
+    const response = await axios.get(`/api/stocks/${stockCode}/history`)
+    return response.data
   } catch (error) {
-    console.error('获取板块股票失败:', error)
-    ElMessage.error('获取板块股票失败')
+    ElMessage.error('获取历史数据失败')
+    return []
   }
-}
-
-const showStockDetail = async (stock) => {
-  if (!stock) return
-  
-  selectedStock.value = stock
-  await nextTick()
-  initChart()
-  loadStockHistory(stock.code)
 }
 
 const initChart = () => {
-  if (!chartRef.value) return
-  
-  if (!chart) {
-    chart = echarts.init(chartRef.value)
+  if (chartContainer.value) {
+    chart.value = echarts.init(chartContainer.value)
   }
+}
+
+const updateChart = async (stockCode) => {
+  if (!chart.value) return
+  
+  const history = await fetchStockHistory(stockCode)
+  const dates = history.map(item => item.date)
+  const data = history.map(item => [
+    item.open,
+    item.close,
+    item.low,
+    item.high
+  ])
   
   const option = {
     title: {
-      text: '股票K线图'
+      text: `${selectedStock.value.name} K线图`
     },
     tooltip: {
       trigger: 'axis',
@@ -275,249 +163,112 @@ const initChart = () => {
         type: 'cross'
       }
     },
-    legend: {
-      data: ['K线', '成交量', '斐波那契位']
+    xAxis: {
+      data: dates
     },
-    grid: [{
-      left: '10%',
-      right: '8%',
-      height: '60%'
-    }, {
-      left: '10%',
-      right: '8%',
-      top: '75%',
-      height: '20%'
-    }],
-    xAxis: [{
-      type: 'category',
-      data: [],
-      scale: true,
-      boundaryGap: true,
-      axisLine: { onZero: false },
-      splitLine: { show: false },
-      min: 'dataMin',
-      max: 'dataMax'
-    }, {
-      type: 'category',
-      gridIndex: 1,
-      data: [],
-      scale: true,
-      boundaryGap: true,
-      axisLine: { onZero: false },
-      axisTick: { show: false },
-      splitLine: { show: false },
-      axisLabel: { show: false },
-      min: 'dataMin',
-      max: 'dataMax'
-    }],
-    yAxis: [{
-      scale: true,
-      splitArea: {
-        show: true
-      }
-    }, {
-      gridIndex: 1,
-      splitNumber: 2,
-      axisLabel: { show: false },
-      axisLine: { show: false },
-      axisTick: { show: false },
-      splitLine: { show: false }
-    }],
-    dataZoom: [{
-      type: 'inside',
-      xAxisIndex: [0, 1],
-      start: 0,
-      end: 100
-    }, {
-      show: true,
-      xAxisIndex: [0, 1],
-      type: 'slider',
-      bottom: '0%',
-      start: 0,
-      end: 100
-    }],
+    yAxis: {},
     series: [{
-      name: 'K线',
       type: 'candlestick',
-      data: [],
-      itemStyle: {
-        color: '#ef232a',
-        color0: '#14b143',
-        borderColor: '#ef232a',
-        borderColor0: '#14b143'
-      }
-    }, {
-      name: '成交量',
-      type: 'bar',
-      xAxisIndex: 1,
-      yAxisIndex: 1,
-      data: []
-    }, {
-      name: '斐波那契位',
-      type: 'line',
-      data: [],
-      symbol: 'none',
-      lineStyle: {
-        color: '#ffd700',
-        width: 2,
-        type: 'dashed'
-      }
+      data: data
     }]
   }
   
-  chart.setOption(option)
+  chart.value.setOption(option)
 }
 
-const loadStockHistory = async (code) => {
-  try {
-    const response = await axios.get(`http://localhost:8000/api/stock/${code}/history`)
-    if (response.data.history) {
-      const history = response.data.history
-      const dates = history.map(item => item.date)
-      const kLineData = history.map(item => [
-        item.open,
-        item.close,
-        item.low,
-        item.high
-      ])
-      const volumes = history.map(item => item.volume)
-      const fibLevels = history.map(() => selectedStock.value.fib_qfq)
-      
-      chart.setOption({
-        xAxis: [{
-          data: dates
-        }, {
-          data: dates
-        }],
-        series: [{
-          data: kLineData
-        }, {
-          data: volumes
-        }, {
-          data: fibLevels
-        }]
-      })
-    }
-  } catch (error) {
-    console.error('获取股票历史数据失败:', error)
-    ElMessage.error('获取股票历史数据失败')
+const handleSearch = () => {
+  currentPage.value = 1
+  fetchBoards()
+}
+
+const handleModeChange = () => {
+  currentPage.value = 1
+  fetchBoards()
+}
+
+const handlePageChange = (page) => {
+  currentPage.value = page
+  fetchBoards()
+}
+
+const handleBoardClick = async (row) => {
+  selectedBoard.value = row
+  await fetchStocks(row.code)
+}
+
+const handleStockClick = async (row) => {
+  selectedStock.value = row
+  await updateChart(row.code)
+}
+
+const refreshData = async () => {
+  if (selectedBoard.value) {
+    await fetchStocks(selectedBoard.value.code)
   }
 }
 
-const refreshStockData = async () => {
-  if (!selectedStock.value) return
+// WebSocket连接
+const connectWebSocket = () => {
+  const ws = new WebSocket('ws://localhost:8000/ws')
   
-  loading.value = true
-  try {
-    const response = await axios.get(`http://localhost:8000/api/stock/${selectedStock.value.code}/refresh`)
-    selectedStock.value = response.data
-    ElMessage.success('数据刷新成功')
-  } catch (error) {
-    console.error('刷新股票数据失败:', error)
-    ElMessage.error('刷新股票数据失败')
-  } finally {
-    loading.value = false
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data)
+    if (data.type === 'update') {
+      ElMessage.success('数据已更新')
+      if (selectedBoard.value) {
+        fetchStocks(selectedBoard.value.code)
+      }
+    }
+  }
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket错误:', error)
   }
 }
 
-const refreshAllData = async () => {
-  loading.value = true
-  try {
-    await Promise.all([
-      fetchBoards(),
-      loadAvailableBoards()
-    ])
-    ElMessage.success('数据刷新成功')
-  } catch (error) {
-    console.error('刷新数据失败:', error)
-    ElMessage.error('刷新数据失败')
-  } finally {
-    loading.value = false
-  }
-}
-
+// 生命周期钩子
 onMounted(() => {
   fetchBoards()
-  
-  window.addEventListener('resize', () => {
-    if (chart) {
-      chart.resize()
-    }
-  })
+  initChart()
+  connectWebSocket()
 })
 </script>
 
 <style scoped>
-.home {
+.container {
+  display: flex;
   height: 100vh;
-  background-color: #f5f7fa;
-}
-
-.el-header {
-  background-color: #fff;
-  border-bottom: 1px solid #dcdfe6;
-  padding: 0 20px;
-}
-
-.header-content {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  height: 100%;
-}
-
-.header-buttons {
-  display: flex;
-  gap: 10px;
-}
-
-.el-main {
   padding: 20px;
+  gap: 20px;
 }
 
-.board-card {
-  height: calc(100vh - 120px);
-}
-
-.card-header {
+.left-panel {
+  width: 300px;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.right-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.search-box {
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
-.stock-detail-card {
-  height: calc(100vh - 120px);
-}
-
-.stock-info {
-  margin-bottom: 20px;
+.board-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .stock-chart {
   margin-top: 20px;
-}
-
-.stock-popover {
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-h1 {
-  margin: 0;
-  font-size: 24px;
-  color: #303133;
-}
-
-.el-input {
-  width: 200px;
-}
-
-.el-descriptions {
-  margin-bottom: 20px;
-}
-
-.el-tag {
-  margin-right: 5px;
 }
 </style> 
