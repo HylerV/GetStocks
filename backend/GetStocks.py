@@ -293,95 +293,130 @@ def get_hist_data(symbol, adjust_type):
 def get_stock_detail(stock_code):
     """获取股票详细信息（包括技术分析）"""
     logger.info(f"=== 获取股票[{stock_code}]详情 ===")
+    
+    # 基本结果结构
+    result = {
+        'code': stock_code,
+        'name': '',
+        'current_price': 0,
+        'market_cap': 0,
+        'type': 'stock',
+        'kdata': [],
+        'fibonacci': None
+    }
+    
     try:
-        # 获取基本信息
-        df = ak.stock_zh_a_spot_em()
-        df['代码'] = df['代码'].astype(str).str.zfill(6)
-        stock_info = df[df['代码'] == stock_code]
-        
-        if stock_info.empty:
-            logger.error(f"股票代码[{stock_code}]不存在")
-            return None
+        # 1. 获取基本信息
+        try:
+            df = ak.stock_zh_a_spot_em()
+            if not df.empty:
+                df['代码'] = df['代码'].astype(str).str.zfill(6)
+                stock_info = df[df['代码'] == stock_code]
             
-        stock_info = stock_info.iloc[0]
-        
-        # 构建基本结果
-        result = {
-            'code': stock_code,
-            'name': stock_info['名称'],
-            'current_price': float(stock_info['最新价']),
-            'market_cap': round(float(stock_info['流通市值'])/1e8, 2),
-            'type': 'stock'
-        }
-        
-        # 获取历史数据
-        hist_hfq = get_hist_data(stock_code, "hfq")
-        if hist_hfq is None:
-            logger.warning(f"股票[{stock_code}]后复权数据获取失败")
-            return result
-            
-        hist_qfq = get_hist_data(stock_code, "qfq")
-        if hist_qfq is None:
-            logger.warning(f"股票[{stock_code}]前复权数据获取失败")
-            return result
-        
-        # 历史K线数据
-        result['kdata'] = []
-        for index, row in hist_hfq.iterrows():
-            try:
-                result['kdata'].append({
-                    'date': index.strftime('%Y-%m-%d'),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': float(row['volume']) if 'volume' in row else 0
-                })
-            except:
-                continue
-        
-        # 计算斐波那契回调
-        fib_data = calculate_fib_with_dates(hist_hfq)
-        
-        if all(x is not None for x in fib_data):
-            low_date, high_date, hfq_low, hfq_high, hfq_fib = fib_data
-            
-            # 在前复权数据中查找对应日期的价格
-            if low_date in hist_qfq.index and high_date in hist_qfq.index:
-                qfq_low = round(hist_qfq.loc[low_date, 'low'], 2)
-                qfq_high = round(hist_qfq.loc[high_date, 'high'], 2)
-                qfq_fib = round(qfq_low + (qfq_high - qfq_low) * 0.618, 2)
-                
-                # 计算突破状态
-                is_breakthrough = float(stock_info['最新价']) > qfq_fib
-                
-                # 添加斐波那契分析结果
-                result['fibonacci'] = {
-                    'hfq': {
-                        'low': hfq_low,
-                        'high': hfq_high,
-                        'fib618': hfq_fib,
-                    },
-                    'qfq': {
-                        'low': qfq_low,
-                        'high': qfq_high,
-                        'fib618': qfq_fib
-                    },
-                    'dates': {
-                        'low_date': low_date.strftime('%Y-%m-%d'),
-                        'high_date': high_date.strftime('%Y-%m-%d')
-                    },
-                    'breakthrough': '是' if is_breakthrough else '否'
-                }
+                if not stock_info.empty:
+                    stock_info = stock_info.iloc[0]
+                    result.update({
+                        'name': stock_info['名称'],
+                        'current_price': float(stock_info['最新价']),
+                        'market_cap': round(float(stock_info['流通市值'])/1e8, 2)
+                    })
+                else:
+                    logger.warning(f"未找到股票代码 {stock_code} 的基本信息")
             else:
-                logger.warning(f"前复权数据中缺少关键日期: low_date={low_date}, high_date={high_date}")
+                logger.warning("A股列表数据为空")
+        except Exception as e:
+            logger.error(f"获取股票基本信息失败: {str(e)}")
         
-        logger.info(f"股票[{stock_code}]详情获取成功")
+        # 2. 获取历史数据并进行技术分析
+        try:
+            # 获取后复权数据
+            hist_hfq = get_hist_data(stock_code, "hfq")
+            if hist_hfq is None or hist_hfq.empty:
+                logger.warning(f"股票[{stock_code}]后复权数据获取失败或为空")
+                return result
+            
+            # 获取前复权数据    
+            hist_qfq = get_hist_data(stock_code, "qfq")
+            if hist_qfq is None or hist_qfq.empty:
+                logger.warning(f"股票[{stock_code}]前复权数据获取失败或为空")
+                return result
+            
+            # 处理K线历史数据
+            try:
+                kdata = []
+                for index, row in hist_hfq.iterrows():
+                    try:
+                        kdata.append({
+                            'date': index.strftime('%Y-%m-%d'),
+                            'open': float(row['open']),
+                            'high': float(row['high']),
+                            'low': float(row['low']),
+                            'close': float(row['close']),
+                            'volume': float(row['volume']) if 'volume' in row else 0
+                        })
+                    except Exception as e:
+                        logger.error(f"处理K线数据行失败: {str(e)}")
+                        continue
+                
+                result['kdata'] = kdata
+                logger.info(f"成功生成{len(kdata)}条K线数据")
+            except Exception as e:
+                logger.error(f"处理K线数据失败: {str(e)}")
+            
+            # 计算斐波那契回调
+            try:
+                fib_data = calculate_fib_with_dates(hist_hfq)
+                
+                if all(x is not None for x in fib_data):
+                    low_date, high_date, hfq_low, hfq_high, hfq_fib = fib_data
+                    
+                    # 在前复权数据中查找对应日期的价格
+                    if low_date in hist_qfq.index and high_date in hist_qfq.index:
+                        qfq_low = round(hist_qfq.loc[low_date, 'low'], 2)
+                        qfq_high = round(hist_qfq.loc[high_date, 'high'], 2)
+                        qfq_fib = round(qfq_low + (qfq_high - qfq_low) * 0.618, 2)
+                        
+                        # 计算突破状态
+                        is_breakthrough = float(result['current_price']) > qfq_fib if result['current_price'] else False
+                        
+                        # 添加斐波那契分析结果
+                        result['fibonacci'] = {
+                            'hfq': {
+                                'low': hfq_low,
+                                'high': hfq_high,
+                                'fib618': hfq_fib,
+                            },
+                            'qfq': {
+                                'low': qfq_low,
+                                'high': qfq_high,
+                                'fib618': qfq_fib
+                            },
+                            'dates': {
+                                'low_date': low_date.strftime('%Y-%m-%d'),
+                                'high_date': high_date.strftime('%Y-%m-%d')
+                            },
+                            'breakthrough': '是' if is_breakthrough else '否'
+                        }
+                        logger.info(f"成功计算斐波那契数据: 低点={qfq_low}, 高点={qfq_high}, 0.618={qfq_fib}")
+                    else:
+                        logger.warning(f"前复权数据中缺少关键日期: low_date={low_date}, high_date={high_date}")
+                else:
+                    logger.warning("斐波那契分析未找到有效波段")
+            except Exception as e:
+                logger.error(f"斐波那契分析失败: {str(e)}")
+                logger.error(traceback.format_exc())
+        
+        except Exception as e:
+            logger.error(f"获取历史数据失败: {str(e)}")
+            logger.error(traceback.format_exc())
+        
+        logger.info(f"股票[{stock_code}]详情获取完成")
         return result
+        
     except Exception as e:
-        logger.error(f"获取股票[{stock_code}]详情失败: {str(e)}")
+        logger.error(f"获取股票[{stock_code}]详情过程中发生错误: {str(e)}")
         logger.error(traceback.format_exc())
-        return None
+        return result  # 返回部分数据而不是None
 
 def calculate_fib_with_dates(hist_data):
     """动态识别波段"""

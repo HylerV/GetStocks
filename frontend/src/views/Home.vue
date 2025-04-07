@@ -75,10 +75,16 @@
           @row-click="handleStockClick"
           class="data-table"
         >
-          <el-table-column prop="code" label="代码" width="100" />
-          <el-table-column prop="name" label="名称" min-width="120" />
+          <el-table-column prop="code" label="代码" width="100" fixed="left" />
+          <el-table-column prop="name" label="名称" min-width="120" fixed="left" />
           <el-table-column prop="current_price" label="当前价" width="100" sortable />
           <el-table-column prop="market_cap" label="市值(亿)" width="100" sortable />
+          <el-table-column prop="hfq_low" label="后复权低位" width="100" sortable />
+          <el-table-column prop="hfq_high" label="后复权高位" width="100" sortable />
+          <el-table-column prop="hfq_fib" label="后复权0.618" width="120" sortable />
+          <el-table-column prop="qfq_low" label="前复权低位" width="100" sortable />
+          <el-table-column prop="qfq_high" label="前复权高位" width="100" sortable />
+          <el-table-column prop="qfq_fib" label="前复权0.618" width="120" sortable />
           <el-table-column label="突破状态" width="100">
             <template #default="{ row }">
               <el-tag :type="row.breakthrough === '是' ? 'success' : 'info'">
@@ -152,7 +158,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import axios from 'axios'
@@ -208,8 +214,23 @@ const fetchStocks = async (boardCode) => {
   try {
     stocksLoading.value = true
     const response = await axios.get(`/api/stocks/${boardCode}`)
-    // 确保response.data.items是一个数组
-    currentStocks.value = response.data.data || []
+    
+    // 确保获取到数据
+    const stocksData = response.data.data || []
+    
+    // 处理数据，添加斐波那契相关字段
+    currentStocks.value = stocksData.map(stock => {
+      return {
+        ...stock,
+        hfq_low: stock.fibonacci?.hfq?.low || '-',
+        hfq_high: stock.fibonacci?.hfq?.high || '-',
+        hfq_fib: stock.fibonacci?.hfq?.fib618 || '-',
+        qfq_low: stock.fibonacci?.qfq?.low || '-',
+        qfq_high: stock.fibonacci?.qfq?.high || '-',
+        qfq_fib: stock.fibonacci?.qfq?.fib618 || '-',
+        breakthrough: stock.fibonacci?.breakthrough || '否'
+      }
+    })
   } catch (error) {
     ElMessage.error('获取股票列表失败')
     console.error('获取股票列表失败:', error)
@@ -220,16 +241,54 @@ const fetchStocks = async (boardCode) => {
 }
 
 const fetchStockDetail = async (stockCode) => {
-  try {
-    stocksLoading.value = true
-    const response = await axios.get(`/api/stocks/${stockCode}`)
-    return response.data
-  } catch (error) {
-    ElMessage.error('获取股票详情失败')
-    console.error('获取股票详情失败:', error)
-    return null
-  } finally {
-    stocksLoading.value = false
+  let retries = 0;
+  const maxRetries = 3;
+  
+  while (retries < maxRetries) {
+    try {
+      stocksLoading.value = true;
+      const response = await axios.get(`/api/stocks/${stockCode}/detail`);
+      
+      // 检查返回数据格式
+      if (response.data && response.data.success && response.data.data) {
+        const stockDetail = response.data.data;
+        
+        // 转换并返回数据
+        return {
+          ...stockDetail,
+          kdata: stockDetail.kdata || [],
+          fibonacci: stockDetail.fibonacci || {
+            hfq: { low: '-', high: '-', fib618: '-' },
+            qfq: { low: '-', high: '-', fib618: '-' },
+            dates: { low_date: '-', high_date: '-' },
+            breakthrough: '否'
+          },
+          hfq_low: stockDetail.fibonacci?.hfq?.low || '-',
+          hfq_high: stockDetail.fibonacci?.hfq?.high || '-',
+          hfq_fib: stockDetail.fibonacci?.hfq?.fib618 || '-',
+          qfq_low: stockDetail.fibonacci?.qfq?.low || '-',
+          qfq_high: stockDetail.fibonacci?.qfq?.high || '-',
+          qfq_fib: stockDetail.fibonacci?.qfq?.fib618 || '-',
+          breakthrough: stockDetail.fibonacci?.breakthrough || '否'
+        };
+      } else {
+        // 尝试替代API路径
+        const altResponse = await axios.get(`/api/stocks/${stockCode}`);
+        return altResponse.data;
+      }
+    } catch (error) {
+      retries++;
+      if (retries >= maxRetries) {
+        ElMessage.error(`获取股票详情失败 (${retries}/${maxRetries})`);
+        console.error('获取股票详情失败:', error);
+        return null;
+      }
+      // 等待一段时间后重试
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      ElMessage.warning(`正在重试获取股票详情 (${retries}/${maxRetries})...`);
+    } finally {
+      stocksLoading.value = false;
+    }
   }
 }
 
@@ -393,14 +452,27 @@ const handleBoardClick = async (row) => {
 }
 
 const handleStockClick = async (row) => {
-  selectedStock.value = row
+  selectedStock.value = { ...row }; // 先显示基本信息
   
   // 获取完整的股票详情
-  const detail = await fetchStockDetail(row.code)
+  const detail = await fetchStockDetail(row.code);
   if (detail) {
-    selectedStock.value = { ...row, ...detail }
-    initChart()
-    await updateChart(detail)
+    // 合并详情数据和基础数据
+    selectedStock.value = { 
+      ...row,
+      ...detail,
+      // 确保有这些字段以便显示
+      kdata: detail.kdata || [],
+      fibonacci: detail.fibonacci || {}
+    };
+    
+    // 延迟初始化图表，确保DOM已更新
+    nextTick(() => {
+      initChart();
+      updateChart(selectedStock.value);
+    });
+  } else {
+    ElMessage.error(`无法获取股票 ${row.code} 的详细数据`);
   }
 }
 

@@ -7,7 +7,7 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import axios from 'axios'
 
 // 配置axios默认值
-axios.defaults.baseURL = 'http://localhost:8000'
+axios.defaults.baseURL = ''  // 使用相对路径，请求会通过Vite的代理发送
 axios.defaults.timeout = 10000
 
 // 添加请求拦截器
