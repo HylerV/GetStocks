@@ -148,6 +148,13 @@
           <template #header>
             <div class="card-header">
               <h3>K线图</h3>
+              <div class="chart-controls">
+                <el-checkbox-group v-model="chartIndicators">
+                  <el-checkbox value="MACD">MACD</el-checkbox>
+                  <el-checkbox value="BOLL">布林带</el-checkbox>
+                  <el-checkbox value="VOL">成交量</el-checkbox>
+                </el-checkbox-group>
+              </div>
             </div>
           </template>
           <div ref="chartContainer" class="chart-container"></div>
@@ -177,6 +184,7 @@ const currentStocks = ref([])
 const selectedStock = ref(null)
 const chartContainer = ref(null)
 const chart = ref(null)
+const chartIndicators = ref(['MACD', 'BOLL', 'VOL']) // 需要在el-checkbox中使用value属性替代label
 
 // 计算属性
 const filteredBoards = computed(() => {
@@ -301,51 +309,220 @@ const initChart = () => {
   }
 }
 
-const updateChart = async (stockDetail) => {
-  if (!chart.value) return
-  
-  const kdata = stockDetail.kdata || []
-  if (!kdata.length) {
-    ElMessage.warning('没有可用的历史数据')
-    return
+const updateChart = (stockData) => {
+  if (!chart.value || !stockData || !stockData.kdata || stockData.kdata.length === 0) {
+    return;
   }
   
-  const dates = kdata.map(item => item.date)
-  const data = kdata.map(item => [
-    item.open,
-    item.close,
-    item.low,
-    item.high
-  ])
+  // 每次更新图表时先销毁旧图表，完全重新创建
+  chart.value.dispose();
+  chart.value = echarts.init(chartContainer.value);
   
-  // 计算斐波那契回调水平线
-  let fibLines = []
-  if (stockDetail.fibonacci) {
-    const fib = stockDetail.fibonacci.qfq
-    fibLines = [
-      {
-        name: '高点',
-        value: fib.high,
-        color: '#ff4949'
-      },
-      {
-        name: '0.618',
-        value: fib.fib618,
-        color: '#13ce66'
-      },
-      {
-        name: '低点',
-        value: fib.low,
-        color: '#409eff'
+  const kdata = stockData.kdata;
+  
+  // 准备数据
+  const dates = kdata.map(item => item.date);
+  const data = kdata.map(item => [item.open, item.close, item.low, item.high]);
+  
+  // 计算MACD指标
+  const calculateMACD = (closeData, shortPeriod = 12, longPeriod = 26, signalPeriod = 9) => {
+    const dif = [];
+    const dea = [];
+    const macd = [];
+    
+    // 计算EMA
+    const calculateEMA = (data, period) => {
+      const k = 2 / (period + 1);
+      const ema = [];
+      
+      for (let i = 0; i < data.length; i++) {
+        if (i === 0) {
+          ema.push(data[i]);
+        } else {
+          ema.push(data[i] * k + ema[i - 1] * (1 - k));
+        }
       }
-    ]
+      
+      return ema;
+    };
+    
+    const closeValues = kdata.map(item => parseFloat(item.close));
+    const shortEMA = calculateEMA(closeValues, shortPeriod);
+    const longEMA = calculateEMA(closeValues, longPeriod);
+    
+    // 计算DIF
+    for (let i = 0; i < closeValues.length; i++) {
+      dif.push(shortEMA[i] - longEMA[i]);
+    }
+    
+    // 计算DEA
+    const deaEMA = calculateEMA(dif, signalPeriod);
+    for (let i = 0; i < dif.length; i++) {
+      dea.push(deaEMA[i]);
+      // 计算MACD柱状值
+      macd.push((dif[i] - dea[i]) * 2);
+    }
+    
+    return { dif, dea, macd };
+  };
+  
+  // 计算布林带
+  const calculateBOLL = (closeData, period = 20, multiplier = 2) => {
+    const upper = [];
+    const middle = [];
+    const lower = [];
+    
+    const closeValues = kdata.map(item => parseFloat(item.close));
+    
+    for (let i = 0; i < closeValues.length; i++) {
+      if (i < period - 1) {
+        upper.push(null);
+        middle.push(null);
+        lower.push(null);
+        continue;
+      }
+      
+      let sum = 0;
+      for (let j = i - period + 1; j <= i; j++) {
+        sum += closeValues[j];
+      }
+      
+      const ma = sum / period;
+      
+      let squareSum = 0;
+      for (let j = i - period + 1; j <= i; j++) {
+        squareSum += Math.pow(closeValues[j] - ma, 2);
+      }
+      
+      const std = Math.sqrt(squareSum / period);
+      
+      middle.push(ma);
+      upper.push(ma + multiplier * std);
+      lower.push(ma - multiplier * std);
+    }
+    
+    return { upper, middle, lower };
+  };
+  
+  // 计算成交量
+  const volumes = kdata.map(item => parseFloat(item.volume || 0));
+  
+  // 计算指标
+  const macdData = calculateMACD(kdata);
+  const bollData = calculateBOLL(kdata);
+  
+  // 获取斐波那契水平线
+  const fibonacci = stockData.fibonacci || {};
+  const fibLineValue = parseFloat(fibonacci.qfq?.fib618) || null;
+  
+  // 构建图表选项
+  const grids = [];
+  const xAxis = [];
+  const yAxis = [];
+  
+  // 计算指标数量
+  const showMACD = chartIndicators.value.includes('MACD');
+  const showBOLL = chartIndicators.value.includes('BOLL');
+  const showVOL = chartIndicators.value.includes('VOL');
+  const indicatorCount = (showMACD ? 1 : 0) + (showVOL ? 1 : 0);
+  
+  // 主K线图网格
+  const mainHeight = indicatorCount > 0 ? '60%' : '85%';
+  grids.push({
+    left: '10%', 
+    right: '8%',
+    top: '5%',
+    height: mainHeight
+  });
+  
+  xAxis.push({
+    type: 'category',
+    data: dates,
+    gridIndex: 0,
+    scale: true,
+    boundaryGap: false,
+    axisLine: { onZero: false },
+    splitLine: { show: false },
+    axisLabel: {
+      formatter: function (value) {
+        return value.substring(5); // 只显示月-日
+      }
+    },
+    min: 'dataMin',
+    max: 'dataMax'
+  });
+  
+  yAxis.push({
+    scale: true,
+    gridIndex: 0,
+    splitArea: {
+      show: true
+    }
+  });
+  
+  // 指标图的位置计算
+  let macdIndex = -1;
+  let volIndex = -1;
+  
+  if (indicatorCount > 0) {
+    let position = 0;
+    
+    // MACD指标网格
+    if (showMACD) {
+      macdIndex = position + 1;
+      grids.push({
+        left: '10%',
+        right: '8%',
+        top: '70%',
+        height: '15%'
+      });
+      
+      xAxis.push({
+        type: 'category',
+        gridIndex: macdIndex,
+        data: dates,
+        axisLabel: { show: false }
+      });
+      
+      yAxis.push({
+        gridIndex: macdIndex,
+        scale: true,
+        splitLine: { show: false }
+      });
+      
+      position++;
+    }
+    
+    // 成交量网格
+    if (showVOL) {
+      volIndex = position + 1;
+      grids.push({
+        left: '10%',
+        right: '8%',
+        top: showMACD ? '85%' : '70%',
+        height: '10%'
+      });
+      
+      xAxis.push({
+        type: 'category',
+        gridIndex: volIndex,
+        data: dates,
+        axisLabel: { show: true }
+      });
+      
+      yAxis.push({
+        gridIndex: volIndex,
+        scale: true,
+        splitLine: { show: false }
+      });
+      
+      position++;
+    }
   }
   
+  // 构建图表选项
   const option = {
-    title: {
-      text: `${selectedStock.value.name} K线图`,
-      left: 'center'
-    },
+    animation: false,
     tooltip: {
       trigger: 'axis',
       axisPointer: {
@@ -353,39 +530,25 @@ const updateChart = async (stockDetail) => {
       }
     },
     legend: {
-      data: ['K线', ...fibLines.map(line => line.name)],
-      top: 30
+      data: ['K线', 'MA5', 'MA10', 'MA20', 'MA30'],
+      top: 0
     },
-    grid: {
-      left: '3%',
-      right: '3%',
-      bottom: '15%',
-      top: '15%',
-      containLabel: true
-    },
-    xAxis: {
-      type: 'category',
-      data: dates,
-      scale: true,
-      axisLine: { lineStyle: { color: '#8392A5' } }
-    },
-    yAxis: {
-      scale: true,
-      splitArea: {
-        show: true
-      }
-    },
+    grid: grids,
+    xAxis: xAxis,
+    yAxis: yAxis,
     dataZoom: [
       {
         type: 'inside',
-        start: 0,
+        xAxisIndex: [0, macdIndex, volIndex].filter(i => i >= 0),
+        start: 80,
         end: 100
       },
       {
         show: true,
         type: 'slider',
-        bottom: 5,
-        start: 0,
+        xAxisIndex: [0, macdIndex, volIndex].filter(i => i >= 0),
+        bottom: 0,
+        start: 80,
         end: 100
       }
     ],
@@ -395,32 +558,212 @@ const updateChart = async (stockDetail) => {
         type: 'candlestick',
         data: data,
         itemStyle: {
-          color: '#ff4949',
-          color0: '#13ce66',
-          borderColor: '#ff4949',
-          borderColor0: '#13ce66'
-        }
-      },
-      ...fibLines.map(line => ({
-        name: line.name,
-        type: 'line',
-        data: dates.map(() => line.value),
+          color: '#06b06d',
+          color0: '#e64b65',
+          borderColor: '#06b06d',
+          borderColor0: '#e64b65'
+        },
         markLine: {
           symbol: 'none',
-          lineStyle: {
-            color: line.color,
-            type: 'dashed'
-          },
-          label: {
-            formatter: `${line.name}: ${line.value}`
-          }
+          data: fibLineValue ? [
+            {
+              name: '斐波那契0.618',
+              yAxis: fibLineValue,
+              lineStyle: {
+                color: '#f39c12',
+                type: 'dashed',
+                width: 2
+              },
+              label: {
+                formatter: '0.618: ' + fibLineValue
+              }
+            }
+          ] : []
         }
-      }))
+      }
     ]
+  };
+  
+  // 添加MA
+  const calculateMA = (values, period) => {
+    const result = [];
+    for (let i = 0; i < values.length; i++) {
+      if (i < period - 1) {
+        result.push(null);
+        continue;
+      }
+      let sum = 0;
+      for (let j = i - period + 1; j <= i; j++) {
+        sum += values[j][1];
+      }
+      result.push(+(sum / period).toFixed(2));
+    }
+    return result;
+  };
+  
+  const ma5 = calculateMA(data, 5);
+  const ma10 = calculateMA(data, 10);
+  const ma20 = calculateMA(data, 20);
+  const ma30 = calculateMA(data, 30);
+  
+  option.series.push({
+    name: 'MA5',
+    type: 'line',
+    data: ma5,
+    smooth: true,
+    symbol: 'none',
+    lineStyle: {
+      width: 1,
+      opacity: 0.8
+    }
+  });
+  
+  option.series.push({
+    name: 'MA10',
+    type: 'line',
+    data: ma10,
+    smooth: true,
+    symbol: 'none',
+    lineStyle: {
+      width: 1,
+      opacity: 0.8
+    }
+  });
+  
+  option.series.push({
+    name: 'MA20',
+    type: 'line',
+    data: ma20,
+    smooth: true,
+    symbol: 'none',
+    lineStyle: {
+      width: 1,
+      opacity: 0.8
+    }
+  });
+  
+  option.series.push({
+    name: 'MA30',
+    type: 'line',
+    data: ma30,
+    smooth: true,
+    symbol: 'none',
+    lineStyle: {
+      width: 1,
+      opacity: 0.8
+    }
+  });
+  
+  // 布林带
+  if (showBOLL) {
+    option.legend.data.push('BOLL', 'UB', 'LB');
+    
+    option.series.push({
+      name: 'BOLL',
+      type: 'line',
+      data: bollData.middle,
+      smooth: true,
+      lineStyle: {
+        opacity: 0.8,
+        color: '#9b59b6'
+      },
+      symbol: 'none'
+    });
+    
+    option.series.push({
+      name: 'UB',
+      type: 'line',
+      data: bollData.upper,
+      lineStyle: {
+        opacity: 0.8,
+        color: '#9b59b6'
+      },
+      symbol: 'none'
+    });
+    
+    option.series.push({
+      name: 'LB',
+      type: 'line',
+      data: bollData.lower,
+      lineStyle: {
+        opacity: 0.8,
+        color: '#9b59b6'
+      },
+      symbol: 'none'
+    });
   }
   
-  chart.value.setOption(option, true)
-  chart.value.resize()
+  // MACD 指标
+  if (showMACD && macdIndex !== -1) {
+    option.legend.data.push('DIF', 'DEA', 'MACD');
+    
+    option.series.push({
+      name: 'DIF',
+      type: 'line',
+      xAxisIndex: macdIndex,
+      yAxisIndex: macdIndex,
+      data: macdData.dif,
+      symbol: 'none',
+      lineStyle: {
+        width: 1.5,
+        color: '#da6ee8'
+      }
+    });
+    
+    option.series.push({
+      name: 'DEA',
+      type: 'line',
+      xAxisIndex: macdIndex,
+      yAxisIndex: macdIndex,
+      data: macdData.dea,
+      symbol: 'none',
+      lineStyle: {
+        width: 1.5,
+        color: '#ffab65'
+      }
+    });
+    
+    option.series.push({
+      name: 'MACD',
+      type: 'bar',
+      xAxisIndex: macdIndex,
+      yAxisIndex: macdIndex,
+      data: macdData.macd,
+      itemStyle: {
+        color: function(params) {
+          return params.data >= 0 ? '#e64b65' : '#06b06d';
+        }
+      }
+    });
+  }
+  
+  // 成交量
+  if (showVOL && volIndex !== -1) {
+    option.legend.data.push('成交量');
+    
+    option.series.push({
+      name: '成交量',
+      type: 'bar',
+      xAxisIndex: volIndex,
+      yAxisIndex: volIndex,
+      data: volumes,
+      itemStyle: {
+        color: function(params, index) {
+          const item = kdata[index];
+          return parseFloat(item.close) >= parseFloat(item.open) ? '#e64b65' : '#06b06d';
+        }
+      }
+    });
+  }
+  
+  // 应用选项
+  chart.value.setOption(option, true);
+  
+  // 调整图表大小
+  chart.value.resize({
+    width: 'auto',
+    height: 600  // 设置更大的高度
+  });
 }
 
 const handleSearch = () => {
@@ -429,14 +772,16 @@ const handleSearch = () => {
 }
 
 const handleModeChange = () => {
-  currentPage.value = 1
-  selectedBoard.value = null
-  selectedStock.value = null
+  currentPage.value = 1;
+  selectedBoard.value = null;
+  selectedStock.value = null;
   
   if (mode.value === 'all') {
-    fetchStocks('ALL')
+    // 在全市场模式下直接获取所有股票
+    fetchStocks('ALL');
   } else {
-    fetchBoards()
+    // 板块模式下，先加载板块列表
+    fetchBoards();
   }
 }
 
@@ -452,27 +797,49 @@ const handleBoardClick = async (row) => {
 }
 
 const handleStockClick = async (row) => {
-  selectedStock.value = { ...row }; // 先显示基本信息
-  
-  // 获取完整的股票详情
-  const detail = await fetchStockDetail(row.code);
-  if (detail) {
-    // 合并详情数据和基础数据
+  try {
+    if (!row || !row.code) {
+      ElMessage.error('无效的股票数据');
+      return;
+    }
+    
+    console.log('点击股票:', row);
+    
+    // 先显示基础信息
     selectedStock.value = { 
-      ...row,
-      ...detail,
-      // 确保有这些字段以便显示
-      kdata: detail.kdata || [],
-      fibonacci: detail.fibonacci || {}
+      ...row, 
+      breakthrough: row.breakthrough  // 保持列表页的突破状态一致性
     };
     
-    // 延迟初始化图表，确保DOM已更新
-    nextTick(() => {
-      initChart();
-      updateChart(selectedStock.value);
-    });
-  } else {
-    ElMessage.error(`无法获取股票 ${row.code} 的详细数据`);
+    // 清空旧图表
+    if (chart.value) {
+      chart.value.dispose();
+      chart.value = null;
+    }
+    
+    // 获取完整的股票详情
+    ElMessage.info(`正在加载 ${row.name}(${row.code}) 的详细数据...`);
+    
+    const detail = await fetchStockDetail(row.code);
+    
+    if (detail) {
+      // 合并详情数据，但保持突破状态与列表页一致
+      selectedStock.value = {
+        ...detail,
+        breakthrough: row.breakthrough // 确保突破状态一致性
+      };
+      
+      // 重新初始化图表
+      nextTick(() => {
+        initChart();
+        updateChart(selectedStock.value);
+      });
+    } else {
+      ElMessage.error(`无法获取 ${row.name}(${row.code}) 的详细数据`);
+    }
+  } catch (error) {
+    console.error('处理股票点击异常:', error);
+    ElMessage.error('无法加载股票详情');
   }
 }
 
@@ -521,6 +888,13 @@ watch(selectedStock, (newVal) => {
   }
 })
 
+// 添加对chartIndicators变化的监听
+watch(chartIndicators, () => {
+  if (selectedStock.value && chart.value) {
+    updateChart(selectedStock.value);
+  }
+}, { deep: true });
+
 // 生命周期钩子
 onMounted(() => {
   if (mode.value === 'board') {
@@ -541,6 +915,8 @@ onMounted(() => {
   height: 100vh;
   padding: 0;
   background-color: #f5f7fa;
+  max-width: 1440px;  /* 添加最大宽度限制 */
+  margin: 0 auto;     /* 居中显示 */
 }
 
 /* 顶部区域样式 */
@@ -548,15 +924,17 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 20px;
+  padding: 16px 24px;  /* 增加内边距 */
   background-color: #fff;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-  z-index: 10;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.08);
+  border-radius: 0 0 8px 8px;  /* 添加圆角 */
+  margin-bottom: 20px;  /* 增加与下方内容的间距 */
 }
 
 .app-title {
   margin: 0;
-  font-size: 20px;
+  font-size: 24px;  /* 增大字体 */
+  font-weight: 600;  /* 增加字重 */
   color: #303133;
 }
 
@@ -581,7 +959,7 @@ onMounted(() => {
 /* 主内容区样式 */
 .main-content {
   flex: 1;
-  padding: 20px;
+  padding: 20px 24px;  /* 增加水平内边距 */
   overflow: auto;
 }
 
@@ -606,13 +984,25 @@ onMounted(() => {
 
 .table-container {
   background-color: #fff;
-  border-radius: 4px;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-  padding: 20px;
+  border-radius: 8px;  /* 增加圆角 */
+  box-shadow: 0 2px 16px 0 rgba(0, 0, 0, 0.06);  /* 柔化阴影 */
+  padding: 24px;  /* 增加内边距 */
+  margin-bottom: 24px;  /* 增加底部间距 */
 }
 
 .data-table {
-  margin-bottom: 16px;
+  margin-bottom: 24px;
+}
+
+.data-table :deep(.el-table__header) th {
+  background-color: #f7fafc;  /* 表头背景色 */
+  font-weight: 600;
+  padding: 12px 8px;  /* 调整单元格内边距 */
+}
+
+.data-table :deep(.el-table__row) td {
+  padding: 14px 8px;  /* 增加单元格内边距 */
+  border-bottom: 1px solid #eef2f7;  /* 细化边框 */
 }
 
 .back-link {
@@ -626,53 +1016,45 @@ onMounted(() => {
 
 /* 股票详情区样式 */
 .stock-detail {
-  margin-top: 20px;
-  padding: 20px;
+  margin-top: 24px;
+  padding: 24px;
   background-color: #fff;
-  border-radius: 4px;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 2px 16px 0 rgba(0, 0, 0, 0.06);
 }
 
 .detail-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid #eef2f7;  /* 添加底部边框 */
+  padding-bottom: 16px;  /* 增加底部内边距 */
 }
 
 .stock-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 22px;
+  font-weight: 600;
 }
 
 .stock-price {
-  margin-left: 12px;
-  font-size: 20px;
+  margin-left: 16px;
+  font-size: 24px;
+  font-weight: 700;
   color: #f56c6c;
 }
 
 .detail-content {
   display: flex;
-  gap: 20px;
+  gap: 24px;
 }
 
 .info-card {
   width: 300px;
-}
-
-.chart-card {
-  flex: 1;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.chart-container {
-  height: 400px;
-  width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.04);
+  overflow: hidden;  /* 确保圆角生效 */
 }
 
 .info-grid {
@@ -694,6 +1076,48 @@ onMounted(() => {
 .value {
   font-weight: 500;
   color: #303133;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #f7fafc;  /* 添加背景色 */
+  padding: 14px 20px;  /* 增加内边距 */
+}
+
+.card-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.chart-card {
+  flex: 1;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.04);
+  overflow: hidden;  /* 确保圆角生效 */
+}
+
+.chart-container {
+  height: 500px;  /* 增加图表高度 */
+  width: 100%;
+  padding: 20px;  /* 添加内边距 */
+}
+
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.data-table :deep(.el-table__cell) {
+  text-align: center;
+}
+
+.data-table :deep(.el-button) {
+  padding: 8px 16px;
 }
 
 @media (max-width: 768px) {

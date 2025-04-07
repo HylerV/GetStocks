@@ -18,12 +18,10 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        secure: false,
-        ws: true  // 支持websocket
+        secure: false
       },
       '/ws': {
         target: 'ws://localhost:8000',
-        changeOrigin: true,
         ws: true
       }
     }

@@ -36,11 +36,14 @@ axios.interceptors.response.use(
 
 const app = createApp(App)
 
-// 全局错误处理
+// 添加全局错误处理
 app.config.errorHandler = (err, vm, info) => {
   console.error('Vue错误:', err)
   console.error('错误信息:', info)
 }
+
+// 全局配置
+app.config.globalProperties.$axios = axios
 
 // 注册Element Plus图标
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
