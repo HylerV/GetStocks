@@ -186,6 +186,9 @@ const chartContainer = ref(null)
 const chart = ref(null)
 const chartIndicators = ref(['MACD', 'BOLL', 'VOL']) // 需要在el-checkbox中使用value属性替代label
 
+// 添加本地缓存
+const stocksCache = ref({})
+
 // 计算属性
 const filteredBoards = computed(() => {
   if (!searchKeyword.value) return boards.value
@@ -221,8 +224,29 @@ const fetchBoards = async () => {
 const fetchStocks = async (boardCode) => {
   try {
     stocksLoading.value = true
+    
+    // 检查缓存
+    if (stocksCache.value[boardCode] && stocksCache.value[boardCode].length > 0) {
+      console.log(`使用缓存数据: ${boardCode}, ${stocksCache.value[boardCode].length}条数据`)
+      currentStocks.value = stocksCache.value[boardCode]
+      return
+    }
+    
     // 使用明确的板块股票API路径避免冲突
-    const response = await axios.get(`/api/boards/${boardCode}/stocks`)
+    console.log(`请求板块[${boardCode}]的股票数据...`)
+    const requestOptions = {
+      timeout: boardCode === 'ALL' ? 60000 : 30000, // 全市场模式给予更长的超时时间
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache'
+      }
+    }
+    
+    if (boardCode === 'ALL') {
+      ElMessage.info('正在获取全市场数据，请耐心等待...')
+    }
+    
+    const response = await axios.get(`/api/boards/${boardCode}/stocks`, requestOptions)
     
     // 打印原始数据，查看结构
     console.log('API返回的原始数据:', response.data)
@@ -232,23 +256,50 @@ const fetchStocks = async (boardCode) => {
     
     if (stocksData.length === 0) {
       console.warn('未获取到股票数据')
-      // 使用模拟数据测试
-      stocksData.push({
-        code: '000001',
-        name: '平安银行',
-        current_price: 10.25,
-        market_cap: 35.8,
-        fibonacci: {
-          hfq: { low: 8.5, high: 12.3, fib618: 9.95 },
-          qfq: { low: 8.5, high: 12.3, fib618: 9.95 },
-          breakthrough: '是'
+      if (boardCode === 'ALL') {
+        ElMessage.warning('未获取到全市场数据，使用模拟数据')
+        // 生成更多模拟数据用于全市场模式
+        for (let i = 0; i < 20; i++) {
+          const code = `60${i.toString().padStart(4, '0')}`
+          const basePrice = 10 + Math.random() * 40
+          const marketCap = Math.round((20 + Math.random() * 80) * 100) / 100
+          
+          stocksData.push({
+            code: code,
+            name: `模拟股票-${code}`,
+            current_price: basePrice,
+            market_cap: marketCap,
+            fibonacci: {
+              hfq: { low: basePrice * 0.8, high: basePrice * 1.2, fib618: basePrice * 0.95 },
+              qfq: { low: basePrice * 0.8, high: basePrice * 1.2, fib618: basePrice * 0.95 },
+              breakthrough: Math.random() > 0.5 ? '是' : '否'
+            },
+            is_mock: true
+          })
         }
-      })
+      } else {
+        // 单板块模式下的模拟数据
+        stocksData.push({
+          code: '000001',
+          name: '平安银行',
+          current_price: 10.25,
+          market_cap: 35.8,
+          fibonacci: {
+            hfq: { low: 8.5, high: 12.3, fib618: 9.95 },
+            qfq: { low: 8.5, high: 12.3, fib618: 9.95 },
+            breakthrough: '是'
+          },
+          is_mock: true
+        })
+      }
     }
     
     // 处理数据，添加斐波那契相关字段
-    currentStocks.value = stocksData.map(stock => {
-      console.log('处理股票数据:', stock.code, stock.name, stock.fibonacci)
+    const processedStocks = stocksData.map(stock => {
+      // 控制台日志太多会影响性能，只记录少量数据
+      if (stocksData.indexOf(stock) < 5) {
+        console.log('处理股票数据:', stock.code, stock.name, stock.fibonacci)
+      }
       
       // 尝试各种可能的数据结构解析
       const fibonacci = stock.fibonacci || {}
@@ -258,6 +309,7 @@ const fetchStocks = async (boardCode) => {
       // 提取前后复权数据，优先使用fibonacci结构，其次尝试直接从stock提取
       return {
         ...stock,
+        name: stock.is_mock ? `【模拟】${stock.name}` : stock.name,
         hfq_low: hfq.low || stock.hfq_low || '-',
         hfq_high: hfq.high || stock.hfq_high || '-',
         hfq_fib: hfq.fib618 || stock.hfq_fib || '-',
@@ -268,10 +320,34 @@ const fetchStocks = async (boardCode) => {
       }
     })
     
-    console.log('处理后的股票数据:', currentStocks.value)
+    // 保存到缓存
+    stocksCache.value[boardCode] = processedStocks
+    
+    // 更新当前数据
+    currentStocks.value = processedStocks
+    
+    console.log(`处理完成: ${boardCode}，共${processedStocks.length}条数据`)
+    
+    if (boardCode === 'ALL' && processedStocks.length > 0) {
+      ElMessage.success(`已加载全市场数据: ${processedStocks.length}只股票`)
+    }
   } catch (error) {
-    ElMessage.error('获取股票列表失败')
     console.error('获取股票列表失败:', error)
+    
+    // 特殊处理超时错误
+    if (error.code === 'ECONNABORTED') {
+      ElMessage.error('数据请求超时，请稍后再试或选择板块模式')
+      
+      if (boardCode === 'ALL') {
+        // 在全市场模式下超时，自动切换到板块模式
+        ElMessage.info('已自动切换到板块模式')
+        mode.value = 'board'
+        await fetchBoards()
+      }
+    } else {
+      ElMessage.error('获取股票列表失败')
+    }
+    
     currentStocks.value = []
   } finally {
     stocksLoading.value = false
@@ -279,32 +355,32 @@ const fetchStocks = async (boardCode) => {
 }
 
 const fetchStockDetail = async (stockCode) => {
-  let retries = 0;
-  const maxRetries = 3;
+  let retries = 0
+  const maxRetries = 3
   
   while (retries < maxRetries) {
     try {
-      stocksLoading.value = true;
+      stocksLoading.value = true
       
       // 尝试使用明确的股票详情API
-      console.log(`尝试获取股票[${stockCode}]详情...`);
+      console.log(`尝试获取股票[${stockCode}]详情...`)
       const detailResponse = await axios.get(`/api/stocks/${stockCode}/detail`, {
         timeout: 30000  // 增加超时时间到30秒
-      });
-      console.log(`获取到股票[${stockCode}]详情:`, detailResponse.data);
+      })
+      console.log(`获取到股票[${stockCode}]详情:`, detailResponse.data)
       
       if (detailResponse.data && detailResponse.data.success) {
-        const stockDetail = detailResponse.data.data || {};
+        const stockDetail = detailResponse.data.data || {}
         
         // 检查返回数据是否有效
         if (!stockDetail.kdata || stockDetail.kdata.length === 0) {
-          console.warn(`股票[${stockCode}]的K线数据为空`);
+          console.warn(`股票[${stockCode}]的K线数据为空`)
         }
         
         // 提取fibonacci数据，可能在不同的数据结构中
-        const fibonacci = stockDetail.fibonacci || {};
-        const hfq = fibonacci.hfq || {};
-        const qfq = fibonacci.qfq || {};
+        const fibonacci = stockDetail.fibonacci || {}
+        const hfq = fibonacci.hfq || {}
+        const qfq = fibonacci.qfq || {}
         
         // 转换并返回数据
         return {
@@ -319,57 +395,57 @@ const fetchStockDetail = async (stockCode) => {
           qfq_high: qfq.high || stockDetail.qfq_high || '-',
           qfq_fib: qfq.fib618 || stockDetail.qfq_fib || '-',
           breakthrough: fibonacci.breakthrough || stockDetail.breakthrough || '否'
-        };
+        }
       } else {
-        console.warn(`股票[${stockCode}]详情响应无效或格式不正确`);
-        throw new Error('无效的API响应格式');
+        console.warn(`股票[${stockCode}]详情响应无效或格式不正确`)
+        throw new Error('无效的API响应格式')
       }
     } catch (error) {
-      retries++;
-      console.error(`获取股票详情失败 (${retries}/${maxRetries}):`, error);
+      retries++
+      console.error(`获取股票详情失败 (${retries}/${maxRetries}):`, error)
       
       // 特殊处理超时错误
       if (error.code === 'ECONNABORTED') {
-        console.warn('API请求超时，可能是数据量太大');
-        ElMessage.warning(`数据请求超时，正在重试 (${retries}/${maxRetries})...`);
+        console.warn('API请求超时，可能是数据量太大')
+        ElMessage.warning(`数据请求超时，正在重试 (${retries}/${maxRetries})...`)
       }
       
       if (retries >= maxRetries) {
-        ElMessage.error(`获取股票详情失败，已重试 ${retries} 次`);
-        ElMessage.info(`正在使用模拟数据显示...`);
-        return generateMockStockData(stockCode);
+        ElMessage.error(`获取股票详情失败，已重试 ${retries} 次`)
+        ElMessage.info(`正在使用模拟数据显示...`)
+        return generateMockStockData(stockCode)
       }
       
       // 等待一段时间后重试
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      ElMessage.warning(`正在重试获取股票详情 (${retries}/${maxRetries})...`);
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      ElMessage.warning(`正在重试获取股票详情 (${retries}/${maxRetries})...`)
     } finally {
-      stocksLoading.value = false;
+      stocksLoading.value = false
     }
   }
 }
 
 // 生成模拟股票数据以便于前端测试
 const generateMockStockData = (stockCode) => {
-  console.log(`为股票[${stockCode}]生成模拟数据`);
+  console.log(`为股票[${stockCode}]生成模拟数据`)
   
   // 获取今天日期作为基准
-  const today = new Date();
-  const kdata = [];
+  const today = new Date()
+  const kdata = []
   
   // 生成近90天的模拟K线数据
   for (let i = 90; i >= 0; i--) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
-    const dateStr = date.toISOString().split('T')[0];
+    const date = new Date(today)
+    date.setDate(date.getDate() - i)
+    const dateStr = date.toISOString().split('T')[0]
     
     // 生成一些随机价格数据，但保持合理的关系
-    const basePrice = 10 + Math.random() * 5; // 基准价在10-15之间
-    const open = basePrice + (Math.random() - 0.5) * 2;
-    const close = basePrice + (Math.random() - 0.5) * 2;
-    const high = Math.max(open, close) + Math.random() * 0.5;
-    const low = Math.min(open, close) - Math.random() * 0.5;
-    const volume = Math.floor(Math.random() * 10000000) + 1000000;
+    const basePrice = 10 + Math.random() * 5 // 基准价在10-15之间
+    const open = basePrice + (Math.random() - 0.5) * 2
+    const close = basePrice + (Math.random() - 0.5) * 2
+    const high = Math.max(open, close) + Math.random() * 0.5
+    const low = Math.min(open, close) - Math.random() * 0.5
+    const volume = Math.floor(Math.random() * 10000000) + 1000000
     
     kdata.push({
       date: dateStr,
@@ -378,15 +454,15 @@ const generateMockStockData = (stockCode) => {
       low: parseFloat(low.toFixed(2)),
       close: parseFloat(close.toFixed(2)),
       volume: volume
-    });
+    })
   }
   
   // 生成模拟斐波那契数据
-  const currentPrice = parseFloat(kdata[kdata.length - 1].close.toFixed(2));
-  const lowPrice = parseFloat((Math.min(...kdata.map(k => k.low)) * 0.95).toFixed(2));
-  const highPrice = parseFloat((Math.max(...kdata.map(k => k.high)) * 1.05).toFixed(2));
-  const fibPrice = parseFloat((lowPrice + (highPrice - lowPrice) * 0.618).toFixed(2));
-  const breakthrough = currentPrice > fibPrice ? '是' : '否';
+  const currentPrice = parseFloat(kdata[kdata.length - 1].close.toFixed(2))
+  const lowPrice = parseFloat((Math.min(...kdata.map(k => k.low)) * 0.95).toFixed(2))
+  const highPrice = parseFloat((Math.max(...kdata.map(k => k.high)) * 1.05).toFixed(2))
+  const fibPrice = parseFloat((lowPrice + (highPrice - lowPrice) * 0.618).toFixed(2))
+  const breakthrough = currentPrice > fibPrice ? '是' : '否'
   
   return {
     code: stockCode,
@@ -420,23 +496,23 @@ const generateMockStockData = (stockCode) => {
     qfq_fib: fibPrice,
     breakthrough: breakthrough,
     is_mock: true // 标记为模拟数据
-  };
+  }
 }
 
 const initChart = () => {
   if (chartContainer.value && !chart.value) {
     // 先清除可能存在的旧图表实例
     if (chart.value) {
-      chart.value.dispose();
+      chart.value.dispose()
     }
     // 创建新的图表实例
     try {
-      chart.value = echarts.init(chartContainer.value);
+      chart.value = echarts.init(chartContainer.value)
       // 添加窗口大小变化的监听器
-      window.removeEventListener('resize', handleResize);
-      window.addEventListener('resize', handleResize);
+      window.removeEventListener('resize', handleResize)
+      window.addEventListener('resize', handleResize)
     } catch (error) {
-      console.error('图表初始化失败:', error);
+      console.error('图表初始化失败:', error)
     }
   }
 }
@@ -444,18 +520,18 @@ const initChart = () => {
 // 窗口大小变化处理
 const handleResize = () => {
   if (chart.value) {
-    chart.value.resize();
+    chart.value.resize()
   }
 }
 
 const updateChart = (stockData) => {
   if (!chart.value) {
-    console.warn('图表实例不存在，无法更新图表');
-    return;
+    console.warn('图表实例不存在，无法更新图表')
+    return
   }
   
   if (!stockData || !stockData.kdata || stockData.kdata.length === 0) {
-    console.warn('股票数据或K线数据不存在，无法更新图表');
+    console.warn('股票数据或K线数据不存在，无法更新图表')
     if (chart.value) {
       // 显示一个空图表
       chart.value.setOption({
@@ -464,16 +540,16 @@ const updateChart = (stockData) => {
           left: 'center',
           top: 'center'
         }
-      });
+      })
     }
-    return;
+    return
   }
   
   try {
     // 清空旧图表
-    chart.value.clear();
+    chart.value.clear()
     
-    const kdata = stockData.kdata;
+    const kdata = stockData.kdata
     
     // 确保所有数据项都有完整的OHLC属性
     const validKdata = kdata.filter(item => {
@@ -482,135 +558,135 @@ const updateChart = (stockData) => {
              item.open !== undefined && item.open !== null &&
              item.high !== undefined && item.high !== null &&
              item.low !== undefined && item.low !== null &&
-             item.close !== undefined && item.close !== null;
-    });
+             item.close !== undefined && item.close !== null
+    })
     
     if (validKdata.length === 0) {
-      console.warn('没有有效的K线数据点');
+      console.warn('没有有效的K线数据点')
       chart.value.setOption({
         title: {
           text: '数据格式有误，无法显示图表',
           left: 'center',
           top: 'center'
         }
-      });
-      return;
+      })
+      return
     }
     
     // 准备数据
-    const dates = validKdata.map(item => item.date);
+    const dates = validKdata.map(item => item.date)
     const data = validKdata.map(item => [
       parseFloat(item.open) || 0, 
       parseFloat(item.close) || 0, 
       parseFloat(item.low) || 0, 
       parseFloat(item.high) || 0
-    ]);
+    ])
     
     // 准备成交量数据
-    const volumes = validKdata.map(item => parseFloat(item.volume || 0));
+    const volumes = validKdata.map(item => parseFloat(item.volume || 0))
     
     // 计算MACD指标
     const calcMACD = (closeData, shortPeriod = 12, longPeriod = 26, signalPeriod = 9) => {
       const ema = (data, period) => {
-        const k = 2 / (period + 1);
-        const result = [];
+        const k = 2 / (period + 1)
+        const result = []
         for (let i = 0; i < data.length; i++) {
           if (i === 0) {
-            result.push(data[i]);
+            result.push(data[i])
           } else {
-            result.push(data[i] * k + result[i - 1] * (1 - k));
+            result.push(data[i] * k + result[i - 1] * (1 - k))
           }
         }
-        return result;
-      };
+        return result
+      }
       
-      const closes = closeData.map(item => parseFloat(item[1]));
-      const emaShort = ema(closes, shortPeriod);
-      const emaLong = ema(closes, longPeriod);
+      const closes = closeData.map(item => parseFloat(item[1]))
+      const emaShort = ema(closes, shortPeriod)
+      const emaLong = ema(closes, longPeriod)
       
-      const dif = emaShort.map((short, i) => short - emaLong[i]);
-      const emaSignal = ema(dif, signalPeriod);
+      const dif = emaShort.map((short, i) => short - emaLong[i])
+      const emaSignal = ema(dif, signalPeriod)
       
-      const macd = dif.map((d, i) => (d - emaSignal[i]) * 2);
+      const macd = dif.map((d, i) => (d - emaSignal[i]) * 2)
       
       return {
         dif,
         dea: emaSignal,
         macd
-      };
-    };
+      }
+    }
     
     // 计算布林带
     const calcBOLL = (data, period = 20, multiplier = 2) => {
-      const closes = data.map(item => parseFloat(item[1]));
-      const result = { upper: [], middle: [], lower: [] };
+      const closes = data.map(item => parseFloat(item[1]))
+      const result = { upper: [], middle: [], lower: [] }
       
       for (let i = 0; i < closes.length; i++) {
         if (i < period - 1) {
-          result.upper.push('-');
-          result.middle.push('-');
-          result.lower.push('-');
+          result.upper.push('-')
+          result.middle.push('-')
+          result.lower.push('-')
         } else {
-          let sum = 0;
+          let sum = 0
           for (let j = i - period + 1; j <= i; j++) {
-            sum += closes[j];
+            sum += closes[j]
           }
-          const ma = sum / period;
+          const ma = sum / period
           
-          let squareSum = 0;
+          let squareSum = 0
           for (let j = i - period + 1; j <= i; j++) {
-            squareSum += Math.pow(closes[j] - ma, 2);
+            squareSum += Math.pow(closes[j] - ma, 2)
           }
-          const std = Math.sqrt(squareSum / period);
+          const std = Math.sqrt(squareSum / period)
           
-          result.middle.push(ma);
-          result.upper.push(ma + multiplier * std);
-          result.lower.push(ma - multiplier * std);
+          result.middle.push(ma)
+          result.upper.push(ma + multiplier * std)
+          result.lower.push(ma - multiplier * std)
         }
       }
       
-      return result;
-    };
+      return result
+    }
     
     // 计算MA
     const calcMA = (data, period) => {
-      const result = [];
+      const result = []
       for (let i = 0; i < data.length; i++) {
         if (i < period - 1) {
-          result.push('-');
-          continue;
+          result.push('-')
+          continue
         }
-        let sum = 0;
+        let sum = 0
         for (let j = i - period + 1; j <= i; j++) {
-          sum += parseFloat(data[j][1]); // close价格
+          sum += parseFloat(data[j][1]) // close价格
         }
-        result.push((sum / period).toFixed(2));
+        result.push((sum / period).toFixed(2))
       }
-      return result;
-    };
+      return result
+    }
     
     // 获取指标数据
-    const macdData = calcMACD(data);
-    const bollData = calcBOLL(data);
-    const ma5 = calcMA(data, 5);
-    const ma10 = calcMA(data, 10);
-    const ma20 = calcMA(data, 20);
-    const ma30 = calcMA(data, 30);
+    const macdData = calcMACD(data)
+    const bollData = calcBOLL(data)
+    const ma5 = calcMA(data, 5)
+    const ma10 = calcMA(data, 10)
+    const ma20 = calcMA(data, 20)
+    const ma30 = calcMA(data, 30)
     
     // 斐波那契数据
-    const fibonacci = stockData.fibonacci || {};
-    const fibLevel = parseFloat(fibonacci.qfq?.fib618) || null;
+    const fibonacci = stockData.fibonacci || {}
+    const fibLevel = parseFloat(fibonacci.qfq?.fib618) || null
     
     // 确定需要显示的指标
-    const showMACD = chartIndicators.value.includes('MACD');
-    const showBOLL = chartIndicators.value.includes('BOLL');
-    const showVOL = chartIndicators.value.includes('VOL');
+    const showMACD = chartIndicators.value.includes('MACD')
+    const showBOLL = chartIndicators.value.includes('BOLL')
+    const showVOL = chartIndicators.value.includes('VOL')
     
     // 根据显示的指标数量确定网格布局
-    const gridCount = 1 + (showMACD ? 1 : 0) + (showVOL ? 1 : 0);
-    const grids = [];
-    const xAxes = [];
-    const yAxes = [];
+    const gridCount = 1 + (showMACD ? 1 : 0) + (showVOL ? 1 : 0)
+    const grids = []
+    const xAxes = []
+    const yAxes = []
     
     // 创建主图网格
     grids.push({
@@ -618,7 +694,7 @@ const updateChart = (stockData) => {
       right: '8%',
       top: stockData.is_mock ? '15%' : '10%',
       height: gridCount > 1 ? '50%' : '75%'
-    });
+    })
     
     // 主图X轴
     xAxes.push({
@@ -627,17 +703,17 @@ const updateChart = (stockData) => {
       gridIndex: 0,
       axisLine: { onZero: false },
       splitLine: { show: false }
-    });
+    })
     
     // 主图Y轴
     yAxes.push({
       scale: true,
       gridIndex: 0,
       splitArea: { show: true }
-    });
+    })
     
     // 创建系列数组
-    const series = [];
+    const series = []
     
     // 添加K线图
     series.push({
@@ -664,7 +740,7 @@ const updateChart = (stockData) => {
           }
         ]
       } : undefined
-    });
+    })
     
     // 添加移动平均线
     series.push({
@@ -674,7 +750,7 @@ const updateChart = (stockData) => {
       smooth: true,
       symbol: 'none',
       lineStyle: { width: 1 }
-    });
+    })
     
     series.push({
       name: 'MA10',
@@ -683,7 +759,7 @@ const updateChart = (stockData) => {
       smooth: true,
       symbol: 'none',
       lineStyle: { width: 1 }
-    });
+    })
     
     series.push({
       name: 'MA20',
@@ -692,7 +768,7 @@ const updateChart = (stockData) => {
       smooth: true,
       symbol: 'none',
       lineStyle: { width: 1 }
-    });
+    })
     
     series.push({
       name: 'MA30',
@@ -701,14 +777,14 @@ const updateChart = (stockData) => {
       smooth: true,
       symbol: 'none',
       lineStyle: { width: 1 }
-    });
+    })
     
     // 图例数据
-    const legendData = ['K线', 'MA5', 'MA10', 'MA20', 'MA30'];
+    const legendData = ['K线', 'MA5', 'MA10', 'MA20', 'MA30']
     
     // 添加布林带
     if (showBOLL) {
-      legendData.push('BOLL', 'UB', 'LB');
+      legendData.push('BOLL', 'UB', 'LB')
       
       series.push({
         name: 'BOLL',
@@ -720,7 +796,7 @@ const updateChart = (stockData) => {
           color: '#9b59b6'
         },
         symbol: 'none'
-      });
+      })
       
       series.push({
         name: 'UB',
@@ -732,7 +808,7 @@ const updateChart = (stockData) => {
           color: '#9b59b6'
         },
         symbol: 'none'
-      });
+      })
       
       series.push({
         name: 'LB',
@@ -744,16 +820,16 @@ const updateChart = (stockData) => {
           color: '#9b59b6'
         },
         symbol: 'none'
-      });
+      })
     }
     
     // 添加MACD和成交量指标
-    let macdIndex = -1;
-    let volIndex = -1;
+    let macdIndex = -1
+    let volIndex = -1
     
     if (showMACD) {
-      macdIndex = 1;
-      legendData.push('DIF', 'DEA', 'MACD');
+      macdIndex = 1
+      legendData.push('DIF', 'DEA', 'MACD')
       
       // MACD网格
       grids.push({
@@ -761,7 +837,7 @@ const updateChart = (stockData) => {
         right: '8%',
         top: '65%',
         height: '15%'
-      });
+      })
       
       // MACD X轴
       xAxes.push({
@@ -769,14 +845,14 @@ const updateChart = (stockData) => {
         gridIndex: macdIndex,
         data: dates,
         axisLabel: { show: false }
-      });
+      })
       
       // MACD Y轴
       yAxes.push({
         gridIndex: macdIndex,
         scale: true,
         splitNumber: 2
-      });
+      })
       
       // MACD指标线
       series.push({
@@ -787,7 +863,7 @@ const updateChart = (stockData) => {
         data: macdData.dif,
         lineStyle: { width: 1, color: '#da6ee8' },
         symbol: 'none'
-      });
+      })
       
       series.push({
         name: 'DEA',
@@ -797,7 +873,7 @@ const updateChart = (stockData) => {
         data: macdData.dea,
         lineStyle: { width: 1, color: '#ffab65' },
         symbol: 'none'
-      });
+      })
       
       series.push({
         name: 'MACD',
@@ -807,15 +883,15 @@ const updateChart = (stockData) => {
         data: macdData.macd,
         itemStyle: {
           color: function(params) {
-            return params.data >= 0 ? '#e64b65' : '#06b06d';
+            return params.data >= 0 ? '#e64b65' : '#06b06d'
           }
         }
-      });
+      })
     }
     
     if (showVOL) {
-      volIndex = showMACD ? 2 : 1;
-      legendData.push('成交量');
+      volIndex = showMACD ? 2 : 1
+      legendData.push('成交量')
       
       // 成交量网格
       grids.push({
@@ -823,20 +899,20 @@ const updateChart = (stockData) => {
         right: '8%',
         top: showMACD ? '83%' : '65%',
         height: '12%'
-      });
+      })
       
       // 成交量X轴
       xAxes.push({
         type: 'category',
         gridIndex: volIndex,
         data: dates
-      });
+      })
       
       // 成交量Y轴
       yAxes.push({
         scale: true,
         gridIndex: volIndex
-      });
+      })
       
       // 成交量柱状图
       series.push({
@@ -849,10 +925,10 @@ const updateChart = (stockData) => {
           color: function(params, index) {
             return index < validKdata.length && 
                    parseFloat(validKdata[index].close) >= parseFloat(validKdata[index].open) 
-                   ? '#e64b65' : '#06b06d';
+                   ? '#e64b65' : '#06b06d'
           }
         }
-      });
+      })
     }
     
     // 构建最终的图表配置
@@ -916,26 +992,26 @@ const updateChart = (stockData) => {
         }
       ],
       series: series
-    };
+    }
     
     // 应用配置
-    chart.value.setOption(option, true);
+    chart.value.setOption(option, true)
     
   } catch (error) {
-    console.error('图表渲染错误:', error);
+    console.error('图表渲染错误:', error)
     // 显示错误提示
     try {
-      chart.value.dispose();
-      chart.value = echarts.init(chartContainer.value);
+      chart.value.dispose()
+      chart.value = echarts.init(chartContainer.value)
       chart.value.setOption({
         title: {
           text: '图表渲染出错，请稍后再试',
           left: 'center',
           top: 'center'
         }
-      });
+      })
     } catch (finalError) {
-      console.error('无法显示错误信息:', finalError);
+      console.error('无法显示错误信息:', finalError)
     }
   }
 }
@@ -943,9 +1019,9 @@ const updateChart = (stockData) => {
 // 添加清理函数
 const clearChart = () => {
   if (chart.value) {
-    window.removeEventListener('resize', handleResize);
-    chart.value.dispose();
-    chart.value = null;
+    window.removeEventListener('resize', handleResize)
+    chart.value.dispose()
+    chart.value = null
   }
 }
 
@@ -954,17 +1030,22 @@ const handleSearch = () => {
   fetchBoards()
 }
 
-const handleModeChange = () => {
-  currentPage.value = 1;
-  selectedBoard.value = null;
-  selectedStock.value = null;
+const handleModeChange = async () => {
+  currentPage.value = 1
+  selectedBoard.value = null
+  selectedStock.value = null
   
-  if (mode.value === 'all') {
-    // 在全市场模式下直接获取所有股票
-    fetchStocks('ALL');
-  } else {
-    // 板块模式下，先加载板块列表
-    fetchBoards();
+  try {
+    if (mode.value === 'all') {
+      // 在全市场模式下直接获取所有股票
+      await fetchStocks('ALL')
+    } else {
+      // 板块模式下，先加载板块列表
+      await fetchBoards()
+    }
+  } catch (error) {
+    console.error('模式切换错误:', error)
+    ElMessage.error('切换模式失败，请刷新页面重试')
   }
 }
 
@@ -982,27 +1063,27 @@ const handleBoardClick = async (row) => {
 const handleStockClick = async (row) => {
   try {
     if (!row || !row.code) {
-      ElMessage.error('无效的股票数据');
-      return;
+      ElMessage.error('无效的股票数据')
+      return
     }
     
-    console.log('点击股票:', row);
+    console.log('点击股票:', row)
     
     // 先显示基础信息
     selectedStock.value = { 
       ...row, 
       breakthrough: row.breakthrough,  // 保持列表页的突破状态一致性
       kdata: [] // 初始时确保kdata存在但为空数组
-    };
+    }
     
     // 清空旧图表
-    clearChart();
+    clearChart()
     
     // 获取完整的股票详情
-    ElMessage.info(`正在加载 ${row.name}(${row.code}) 的详细数据...`);
+    ElMessage.info(`正在加载 ${row.name}(${row.code}) 的详细数据...`)
     
     try {
-      const detail = await fetchStockDetail(row.code);
+      const detail = await fetchStockDetail(row.code)
       
       if (detail) {
         // 合并详情数据，但保持突破状态与列表页一致
@@ -1010,44 +1091,56 @@ const handleStockClick = async (row) => {
           ...detail,
           breakthrough: row.breakthrough, // 确保突破状态一致性
           name: detail.is_mock ? `【模拟数据】${detail.name}` : detail.name
-        };
+        }
         
         // 如果是模拟数据，显示提示
         if (detail.is_mock) {
-          ElMessage.warning(`正在使用模拟数据显示 ${row.name}(${row.code})，实际数据可能有差异`);
+          ElMessage.warning(`正在使用模拟数据显示 ${row.name}(${row.code})，实际数据可能有差异`)
         }
         
         // 重新初始化图表
         nextTick(() => {
-          initChart();
+          initChart()
           if (chart.value) {
-            updateChart(selectedStock.value);
+            updateChart(selectedStock.value)
           } else {
-            console.error('图表初始化失败');
-            ElMessage.error('无法初始化图表，请刷新页面重试');
+            console.error('图表初始化失败')
+            ElMessage.error('无法初始化图表，请刷新页面重试')
           }
-        });
+        })
       } else {
-        ElMessage.warning(`获取 ${row.name}(${row.code}) 的K线数据失败，仅显示基本信息`);
+        ElMessage.warning(`获取 ${row.name}(${row.code}) 的K线数据失败，仅显示基本信息`)
       }
     } catch (error) {
-      console.error('获取股票详情数据失败:', error);
-      ElMessage.error(`无法获取 ${row.name}(${row.code}) 的详细数据`);
+      console.error('获取股票详情数据失败:', error)
+      ElMessage.error(`无法获取 ${row.name}(${row.code}) 的详细数据`)
     }
   } catch (error) {
-    console.error('处理股票点击异常:', error);
-    ElMessage.error('无法加载股票详情');
+    console.error('处理股票点击异常:', error)
+    ElMessage.error('无法加载股票详情')
   }
 }
 
 const refreshData = async () => {
-  if (mode.value === 'all' || selectedBoard.value) {
-    const boardCode = selectedBoard.value ? selectedBoard.value.code : 'ALL'
-    await fetchStocks(boardCode)
-    ElMessage.success('数据已刷新')
-  } else {
-    await fetchBoards()
-    ElMessage.success('板块列表已刷新')
+  try {
+    // 清除缓存
+    if (mode.value === 'all' || selectedBoard.value) {
+      const boardCode = selectedBoard.value ? selectedBoard.value.code : 'ALL'
+      delete stocksCache.value[boardCode]
+      
+      const boardName = selectedBoard.value ? selectedBoard.value.name : '全市场'
+      ElMessage.info(`正在刷新${boardName}数据...`)
+      
+      await fetchStocks(boardCode)
+      ElMessage.success(`${boardName}数据已刷新`)
+    } else {
+      ElMessage.info('正在刷新板块列表...')
+      await fetchBoards()
+      ElMessage.success('板块列表已刷新')
+    }
+  } catch (error) {
+    console.error('刷新数据失败:', error)
+    ElMessage.error('刷新数据失败，请稍后再试')
   }
 }
 
@@ -1088,9 +1181,9 @@ watch(selectedStock, (newVal) => {
 // 添加对chartIndicators变化的监听
 watch(chartIndicators, () => {
   if (selectedStock.value && chart.value) {
-    updateChart(selectedStock.value);
+    updateChart(selectedStock.value)
   }
-}, { deep: true });
+}, { deep: true })
 
 // 生命周期钩子
 onMounted(() => {
