@@ -7,7 +7,7 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import axios from 'axios'
 
 // 配置axios默认值
-axios.defaults.baseURL = 'http://localhost:8000'
+axios.defaults.baseURL = ''  // 使用相对路径，请求会通过Vite的代理发送
 axios.defaults.timeout = 10000
 
 // 添加请求拦截器
@@ -36,11 +36,14 @@ axios.interceptors.response.use(
 
 const app = createApp(App)
 
-// 全局错误处理
+// 添加全局错误处理
 app.config.errorHandler = (err, vm, info) => {
   console.error('Vue错误:', err)
   console.error('错误信息:', info)
 }
+
+// 全局配置
+app.config.globalProperties.$axios = axios
 
 // 注册Element Plus图标
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
