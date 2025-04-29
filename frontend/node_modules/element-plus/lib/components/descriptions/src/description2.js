@@ -3,7 +3,7 @@
 Object.defineProperty(exports, '__esModule', { value: true });
 
 var vue = require('vue');
-var descriptionsRow = require('./descriptions-row.js');
+var descriptionsRow = require('./descriptions-row2.js');
 var token = require('./token.js');
 var description = require('./description.js');
 var constants = require('./constants.js');

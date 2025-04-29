@@ -6,7 +6,7 @@ var tour$1 = require('./src/tour2.js');
 var step$1 = require('./src/step2.js');
 var tour = require('./src/tour.js');
 var step = require('./src/step.js');
-var content = require('./src/content.js');
+var content = require('./src/content2.js');
 var install = require('../../utils/vue/install.js');
 
 const ElTour = install.withInstall(tour$1["default"], {

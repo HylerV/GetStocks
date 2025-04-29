@@ -2,7 +2,7 @@
 
 Object.defineProperty(exports, '__esModule', { value: true });
 
-var content = require('./content.js');
+var content = require('./content2.js');
 var runtime = require('../../../utils/vue/props/runtime.js');
 var icon = require('../../../utils/vue/icon.js');
 

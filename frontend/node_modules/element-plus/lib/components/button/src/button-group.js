@@ -2,7 +2,7 @@
 
 Object.defineProperty(exports, '__esModule', { value: true });
 
-var button = require('./button2.js');
+var button = require('./button.js');
 
 const buttonGroupProps = {
   size: button.buttonProps.size,
